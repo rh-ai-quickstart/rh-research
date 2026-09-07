@@ -149,3 +149,28 @@ describe('fenceBareSpecs', () => {
     expect(fenceBareSpecs('{ "hello": 1 }')).toBe('{ "hello": 1 }')
   })
 })
+
+describe('legacy colour names degrade gracefully', () => {
+  const spec = (color: string): string =>
+    JSON.stringify({
+      type: 'bar',
+      title: 'T',
+      x: { key: 'k' },
+      series: [{ key: 'v', color }],
+      data: [{ k: 'a', v: 1 }],
+    })
+
+  test('an unrecognised colour does not drop the chart', () => {
+    // Regression guard: `color` used to be a bare z.enum, so a stale "green"
+    // made parseChartSpec return null and the reader saw raw JSON instead of a
+    // chart. The colour is decorative -- it must never invalidate the data.
+    const parsed = parseChartSpec(spec('green'))
+    expect(parsed).not.toBeNull()
+    expect(parsed?.series[0]?.color).toBeUndefined()
+    expect(parsed?.data).toHaveLength(1)
+  })
+
+  test('a valid colour is still honoured', () => {
+    expect(parseChartSpec(spec('primary'))?.series[0]?.color).toBe('primary')
+  })
+})

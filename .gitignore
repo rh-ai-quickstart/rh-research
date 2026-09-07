@@ -116,3 +116,5 @@ docs/notebooks/local_assets/
 # Local working docs (not committed) - upstream catch-up runbook, blog drafts
 /upstream-merge-plan-v2.2.0.md
 /docs/blog/
+/branding-analysis-notes.md
+/branding-plan.md

@@ -4,14 +4,20 @@
 import { z } from 'zod'
 
 export const CHART_TYPES = ['bar', 'hbar', 'line', 'area', 'grouped-bar', 'delta'] as const
-export const CHART_COLORS = ['green', 'blue', 'amber', 'red', 'neutral'] as const
+export const CHART_COLORS = ['primary', 'secondary', 'tertiary', 'quaternary', 'neutral'] as const
 export const VALUE_FORMATS = ['number', 'compact', 'percent', 'currency'] as const
 export const KPI_TONES = ['default', 'accent', 'warn', 'alarm'] as const
 
 const SeriesSchema = z.object({
   key: z.string().min(1),
   label: z.string().optional(),
-  color: z.enum(CHART_COLORS).optional(),
+  // `color` is decorative. An unrecognised value must NOT invalidate the spec:
+  // z.enum rejection propagates up through ChartSpecSchema.safeParse and makes
+  // parseChartSpec return null, so one stale colour would drop the whole chart
+  // (and, in a carousel, every sibling chart) and render raw JSON to the reader.
+  // Models carry strong priors on hue names and will emit legacy values from
+  // cached context. Fall back to cycle position instead.
+  color: z.enum(CHART_COLORS).optional().catch(undefined),
 })
 
 const KpiSchema = z.object({

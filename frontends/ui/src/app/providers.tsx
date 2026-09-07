@@ -48,24 +48,24 @@ const useThemeEffect = (theme: ThemeMode): void => {
     const root = document.documentElement
 
     // Remove existing theme classes
-    root.classList.remove('nv-light', 'nv-dark')
+    root.classList.remove('nv-light', 'nv-dark', 'rh-light', 'rh-dark')
 
     if (theme === 'system') {
       // Check system preference
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-      root.classList.add(prefersDark ? 'nv-dark' : 'nv-light')
+      root.classList.add(...(prefersDark ? ['nv-dark', 'rh-dark'] : ['nv-light', 'rh-light']))
 
       // Listen for system theme changes
       const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
       const handleChange = (e: MediaQueryListEvent): void => {
-        root.classList.remove('nv-light', 'nv-dark')
-        root.classList.add(e.matches ? 'nv-dark' : 'nv-light')
+        root.classList.remove('nv-light', 'nv-dark', 'rh-light', 'rh-dark')
+        root.classList.add(...(e.matches ? ['nv-dark', 'rh-dark'] : ['nv-light', 'rh-light']))
       }
       mediaQuery.addEventListener('change', handleChange)
       return () => mediaQuery.removeEventListener('change', handleChange)
     } else {
       // Apply explicit theme
-      root.classList.add(theme === 'dark' ? 'nv-dark' : 'nv-light')
+      root.classList.add(...(theme === 'dark' ? ['nv-dark', 'rh-dark'] : ['nv-light', 'rh-light']))
     }
   }, [theme, mounted])
 }

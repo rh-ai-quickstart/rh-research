@@ -70,12 +70,12 @@ The semantic tokens (`--background-color-interaction-primary-base`, `--border-co
 If you want info banners and input focus states to match your brand instead of staying blue, also override the blue accent tokens:
 
 ```css
-:where(:root, .nv-light) {
+:where(:root, .rh-light, .nv-light) {
   --background-color-accent-blue: var(--color-green-025);
   --border-color-accent-blue: var(--color-green-600);
   --text-color-accent-blue: var(--color-green-700);
 }
-.nv-dark {
+:is(.rh-dark, .nv-dark) {
   --background-color-accent-blue: var(--color-green-900);
   --border-color-accent-blue: var(--color-green-300);
   --text-color-accent-blue: var(--color-green-300);
@@ -175,3 +175,35 @@ After rebranding, verify these in both light and dark themes:
 - [ ] Favicon appears in browser tab
 - [ ] Welcome message shows your app name
 - [ ] No remaining references to the original brand color hex code
+
+## Chart colours
+
+The inline result charts have their own palette, separate from the KUI tokens
+above. It is defined in `frontends/ui/src/app/globals.css` as `--result-chart-*`,
+with independently chosen light and dark values.
+
+```css
+:where(:root, .rh-light, .nv-light) {
+  --result-chart-1: #EE0000;   /* series 1 -- brand colour belongs here */
+  --result-chart-2: #2a78d6;
+  --result-chart-3: #1baf7a;
+  --result-chart-4: #eda100;
+  --result-chart-neutral: #595959;
+  --result-chart-gain: #2a78d6;
+  --result-chart-loss: #EE0000;
+}
+```
+
+Two constraints that are easy to get wrong:
+
+- **Do not build the series slots from one hue.** A single-hue ramp (brand at
+  100%, 80%, 60% ...) cannot carry categorical identity -- adjacent steps are
+  indistinguishable to full-colour vision, never mind colour-blind readers.
+  Use separate hues and put the brand colour on slot 1.
+- **Do not use green/red for gain/loss.** That pair fails colour-blind
+  separation. Blue/red is the safe diverging pair.
+
+Series slots are named by role (`primary`, `secondary`, ...), not by hue, so a
+chart can never claim to be a colour it is not. The agent prompts in
+`src/aiq_agent/agents/*/prompts/` reference the same role names -- change both
+together.

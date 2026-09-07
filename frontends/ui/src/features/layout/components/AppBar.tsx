@@ -287,7 +287,7 @@ const AppearanceThemeControl: FC = () => {
               kind="tertiary"
               size="small"
               onClick={() => setTheme(mode)}
-              className={`h-auto min-h-9 flex-1 rounded-[var(--radius-md)] border-0 px-2 py-1.5 shadow-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus,#76b900)] ${
+              className={`h-auto min-h-9 flex-1 rounded-[var(--radius-md)] border-0 px-2 py-1.5 shadow-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus,#EE0000)] ${
                 selected ? '!bg-black !text-white hover:!bg-black' : 'bg-transparent hover:bg-white/10'
               }`}
             >
@@ -332,7 +332,7 @@ const DocumentationSection: FC = () => {
         target="_blank"
         rel="noopener noreferrer"
         aria-label="Open Red Hat AI Docs"
-        className="flex w-full items-center justify-between rounded-[var(--radius-md)] px-2 py-2 text-primary transition-colors hover:bg-surface-raised-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-border-focus,#76b900)]"
+        className="flex w-full items-center justify-between rounded-[var(--radius-md)] px-2 py-2 text-primary transition-colors hover:bg-surface-raised-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-border-focus,#EE0000)]"
       >
         <Flex align="center" gap="2">
           <Book className="h-4 w-4 shrink-0" />

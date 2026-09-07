@@ -231,14 +231,14 @@ Chart types: `bar` (category magnitudes), `hbar` (rankings with long text labels
 Spec fields: `type`; `title` (short) and optional `subtitle`; `x` = `{ "key": "<field in each
 row>", "label": "optional" }`; optional `y` = `{ "label": "optional unit", "format": "number |
 compact | percent | currency" }`; `series` = `[ { "key": "<numeric field>", "label": "optional",
-"color": "green | blue | amber | red" } ]`; `data` = rows as objects with raw numbers (fractions
+"color": "primary | secondary | tertiary | quaternary | neutral" } ]`; `data` = rows as objects with raw numbers (fractions
 0-1 for `percent`); optional `kpis` = `[ { "label": "...", "value": "preformatted", "tone": "accent
 | warn | alarm" } ]`. A `delta` chart encodes exactly one series.
 
 Example (ranking):
 
 ```chart
-{"type":"hbar","title":"Top suppliers by late shipments","x":{"key":"supplier"},"y":{"format":"number"},"series":[{"key":"late","color":"amber"}],"data":[{"supplier":"Acme","late":42},{"supplier":"Globex","late":31},{"supplier":"Initech","late":19}]}
+{"type":"hbar","title":"Top suppliers by late shipments","x":{"key":"supplier"},"y":{"format":"number"},"series":[{"key":"late","color":"quaternary"}],"data":[{"supplier":"Acme","late":42},{"supplier":"Globex","late":31},{"supplier":"Initech","late":19}]}
 ```
 
 Example (single value, KPI-only):
@@ -254,5 +254,5 @@ spec>, ... ] }`.
 Example (related trends, carousel):
 
 ```chart-carousel
-{"title":"Quarterly delivery trends","charts":[{"type":"line","title":"On-time delivery rate","x":{"key":"quarter"},"y":{"format":"percent"},"series":[{"key":"rate","color":"green"}],"data":[{"quarter":"Q1","rate":0.88},{"quarter":"Q2","rate":0.90},{"quarter":"Q3","rate":0.93}]},{"type":"line","title":"Late shipments","x":{"key":"quarter"},"y":{"format":"number"},"series":[{"key":"late","color":"amber"}],"data":[{"quarter":"Q1","late":52},{"quarter":"Q2","late":41},{"quarter":"Q3","late":28}]}]}
+{"title":"Quarterly delivery trends","charts":[{"type":"line","title":"On-time delivery rate","x":{"key":"quarter"},"y":{"format":"percent"},"series":[{"key":"rate","color":"primary"}],"data":[{"quarter":"Q1","rate":0.88},{"quarter":"Q2","rate":0.90},{"quarter":"Q3","rate":0.93}]},{"type":"line","title":"Late shipments","x":{"key":"quarter"},"y":{"format":"number"},"series":[{"key":"late","color":"quaternary"}],"data":[{"quarter":"Q1","late":52},{"quarter":"Q2","late":41},{"quarter":"Q3","late":28}]}]}
 ```

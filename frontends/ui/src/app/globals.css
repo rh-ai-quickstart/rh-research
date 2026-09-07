@@ -63,7 +63,7 @@
 }
 
 /* Light theme brand tokens */
-:where(:root, .nv-light) {
+:where(:root, .rh-light, .nv-light) {
   --background-color-interaction-primary-base: var(--color-green-300);
   --background-color-interaction-primary-hover: var(--color-green-400);
   --background-color-interaction-primary-selected: var(--color-green-500);
@@ -88,7 +88,7 @@
 }
 
 /* Dark theme brand tokens */
-.nv-dark {
+:is(.rh-dark, .nv-dark) {
   --background-color-interaction-primary-base: var(--color-green-300);
   --background-color-interaction-primary-hover: var(--color-green-400);
   --background-color-interaction-primary-selected: var(--color-green-500);
@@ -113,7 +113,7 @@
 }
 
 /* Override blue accent (used by "info" banners) to Red Hat red */
-:where(:root, .nv-light) {
+:where(:root, .rh-light, .nv-light) {
   --background-color-accent-blue: var(--color-green-025);
   --background-color-accent-blue-hover: var(--color-green-050);
   --background-color-accent-blue-selected: var(--color-green-100);
@@ -126,7 +126,7 @@
   --text-color-accent-blue-strong: var(--color-green-700);
   --text-color-accent-blue-subtle: var(--color-green-200);
 }
-.nv-dark {
+:is(.rh-dark, .nv-dark) {
   --background-color-accent-blue: var(--color-green-900);
   --background-color-accent-blue-hover: var(--color-green-800);
   --background-color-accent-blue-selected: var(--color-green-700);
@@ -140,11 +140,68 @@
   --text-color-accent-blue-subtle: var(--color-green-200);
 }
 
-/* Red Hat font override — applies site-wide over any KUI/NVIDIA Sans declarations */
-html,
-body,
-* {
-  font-family: 'Red Hat Text', 'Red Hat Display', system-ui, sans-serif !important;
+/* =============================================================================
+   Red Hat fonts — self-hosted
+   -----------------------------------------------------------------------------
+   Replaces a blanket `html, body, * { font-family: ... !important }`. That rule
+   was the only thing applying Red Hat fonts, and because it was `!important` on
+   the universal selector it also beat every monospace rule in the stylesheet --
+   it was the sole `!important` font-family in the whole 373KB build. Code blocks,
+   inline code, JSON and tool payloads therefore rendered in a PROPORTIONAL face,
+   destroying column alignment in every research report.
+
+   Setting the Tailwind theme tokens instead fixes that by REMOVING a hack rather
+   than adding one: no `!important`, no universal selector, and `font-mono` works.
+
+   These :root blocks are UNLAYERED and must stay BELOW the @import at the top of
+   this file. Tailwind's own token defaults are also unlayered, so this wins on
+   SOURCE ORDER, not on layering -- moving the imports below here silently reverts
+   it. (KUI's NVIDIA Sans declarations sit inside @layer base and lose to both.)
+
+   Fonts are self-hosted rather than loaded from Google Fonts: they are Red Hat's
+   own OFL-licensed families, and the Google request did not include Red Hat Mono
+   at all, so there was no brand monospace face available. Shipped unmodified --
+   "Red Hat" is a Reserved Font Name under the OFL, so no subsetting. LICENSE
+   ships alongside in public/fonts/.
+   ============================================================================= */
+@font-face {
+  font-family: 'Red Hat Display';
+  src: url('/fonts/RedHatDisplay-VF.woff2') format('woff2-variations');
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Red Hat Text';
+  src: url('/fonts/RedHatText-VF.woff2') format('woff2-variations');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Red Hat Mono';
+  src: url('/fonts/RedHatMono-VF.woff2') format('woff2-variations');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font-sans: 'Red Hat Text', Arial, Helvetica, sans-serif;
+  --font-mono: 'Red Hat Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: 'Red Hat Display', Arial, Helvetica, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+}
+
+code, pre, kbd, samp, .font-mono {
+  font-family: var(--font-mono);
 }
 
 /* Custom global styles */
@@ -1459,4 +1516,77 @@ button.thinking-phase-head:hover {
   .assistant-turn {
     animation: none;
   }
+}
+
+/* =============================================================================
+   Result chart palette — Red Hat
+   -----------------------------------------------------------------------------
+   Upstream's ResultChart maps series slot 1 to var(--color-brand), which is
+   #EE0000 here. Left alone that collides with its own red slot and makes GAIN
+   and LOSS render identically. These slots are a categorical palette validated
+   with the dataviz skill's checker (lightness band, chroma floor, CVD
+   separation, normal-vision floor, contrast) in BOTH modes -- do not hand-edit
+   a hex without re-running it:
+
+     node scripts/validate_palette.js "<hex,...>" --mode light|dark
+
+   Red Hat red deliberately leads slot 1: brand identity sits on the first
+   series. Dark is a selected set of steps, not an automatic flip.
+   ============================================================================= */
+:where(:root, .rh-light, .nv-light) {
+  --result-chart-1: #EE0000;   /* Red Hat red */
+  --result-chart-2: #2a78d6;   /* blue  */
+  --result-chart-3: #1baf7a;   /* aqua  */
+  --result-chart-4: #eda100;   /* amber */
+  --result-chart-neutral: #595959;
+  --result-chart-gain: #2a78d6;
+  --result-chart-loss: #EE0000;
+}
+:is(.rh-dark, .nv-dark) {
+  --result-chart-1: #EE0000;
+  --result-chart-2: #3987e5;
+  --result-chart-3: #199e70;
+  --result-chart-4: #c98500;
+  --result-chart-neutral: #B8B8B8;
+  --result-chart-gain: #3987e5;
+  --result-chart-loss: #EE0000;
+}
+
+/* Override the teal accent to Red Hat red.
+   KUI's .nv-avatar-root uses --background-color-accent-teal-strong, so the user
+   avatar -- the most persistent element in the app, top-right on every page --
+   rendered #005F5A teal. Verified by sampling the rendered pixel, not by eye.
+   Teal is not a Red Hat UI surface colour (brand teal #0097A7 is reserved for
+   visited links), so the family is remapped the same way accent-blue already is. */
+:where(:root, .rh-light, .nv-light) {
+  --background-color-accent-teal: var(--color-green-025);
+  --background-color-accent-teal-hover: var(--color-green-050);
+  --background-color-accent-teal-selected: var(--color-green-100);
+  --background-color-accent-teal-strong: var(--color-green-300);
+  --background-color-accent-teal-subtle: var(--color-green-100);
+  --background-color-accent-teal-subtle-hover: var(--color-green-200);
+  --background-color-accent-teal-subtle-selected: var(--color-green-600);
+  --border-color-accent-teal: var(--color-green-600);
+  --text-color-accent-teal: var(--color-green-700);
+  --text-color-accent-teal-strong: var(--color-green-700);
+}
+:is(.rh-dark, .nv-dark) {
+  --background-color-accent-teal: var(--color-green-900);
+  --background-color-accent-teal-hover: var(--color-green-800);
+  --background-color-accent-teal-selected: var(--color-green-700);
+  --background-color-accent-teal-strong: var(--color-green-300);
+  --background-color-accent-teal-subtle: var(--color-green-800);
+  --background-color-accent-teal-subtle-hover: var(--color-green-700);
+  --background-color-accent-teal-subtle-selected: var(--color-green-600);
+  --border-color-accent-teal: var(--color-green-300);
+  --text-color-accent-teal: var(--color-green-200);
+  --text-color-accent-teal-strong: var(--color-green-100);
+}
+
+/* KUI never defines --color-border-focus, so every `var(--color-border-focus, ...)`
+   call site was rendering its fallback -- which upstream set to NVIDIA green
+   #76b900 on the keyboard focus ring. Define it so the fallback is dead code. */
+:where(:root, .rh-light, .nv-light),
+:is(.rh-dark, .nv-dark) {
+  --color-border-focus: var(--color-brand);
 }

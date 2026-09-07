@@ -47,7 +47,8 @@ _CONTRACT_SOURCES = {
 
 # Kept in lockstep with the UI ResultChart schema in types.ts.
 _CHART_TYPES = {"bar", "hbar", "line", "area", "grouped-bar", "delta"}
-_CHART_COLORS = {"green", "blue", "amber", "red", "neutral"}
+# Red Hat: slots are named by role, not hue (see ResultChart/palette.ts).
+_CHART_COLORS = {"primary", "secondary", "tertiary", "quaternary", "neutral"}
 _VALUE_FORMATS = {"number", "compact", "percent", "currency"}
 _KPI_TONES = {"default", "accent", "warn", "alarm"}
 

@@ -43,7 +43,7 @@ KPI-only block draws headline tiles, and a carousel draws pageable line charts.
   "subtitle": "Active fleet inventory",
   "x": { "key": "model" },
   "y": { "label": "GPUs", "format": "compact" },
-  "series": [{ "key": "gpus", "color": "green" }],
+  "series": [{ "key": "gpus", "color": "primary" }],
   "data": [
     { "model": "H100", "gpus": 4200 },
     { "model": "A100", "gpus": 3100 },
@@ -58,11 +58,11 @@ KPI-only block draws headline tiles, and a carousel draws pageable line charts.
 | `title` | required; `subtitle` optional |
 | `x` | `{ key, label? }`; `key` must resolve on the data rows |
 | `y` | `{ label?, format? }`; `format` is `number`, `compact`, `percent`, or `currency` |
-| `series` | 1 to 6 of `{ key, label?, color? }`; `color` is `green`, `blue`, `amber`, `red`, or `neutral` |
+| `series` | 1 to 6 of `{ key, label?, color? }`; `color` is `primary`, `secondary`, `tertiary`, `quaternary`, or `neutral` (role names, not hues -- the hexes live in globals.css as `--result-chart-*` and differ between light and dark). An unrecognised value is ignored and the series falls back to its cycle position rather than invalidating the spec. |
 | `data` | 1 to 60 row objects keyed by `x.key` and each `series.key` |
 | `kpis` | optional headline tiles (see below) |
 
-`delta` diverges around zero and colors gains green / losses red by sign;
+`delta` diverges around zero and colors gains blue / losses red by sign (blue rather than green: green-vs-red fails colorblind separation);
 `grouped-bar` draws a legend for its multiple series.
 
 ### KPI-only spec
@@ -88,10 +88,10 @@ For a single value or a one-entity result where a chart would compare nothing:
   "title": "Revenue Forecast: Baseline vs Prediction",
   "charts": [
     { "type": "line", "title": "Baseline vs Prediction", "x": { "key": "month" }, "y": { "format": "currency" },
-      "series": [{ "key": "baseline", "color": "neutral" }, { "key": "prediction", "color": "green" }],
+      "series": [{ "key": "baseline", "color": "neutral" }, { "key": "prediction", "color": "primary" }],
       "data": [ { "month": "Jan", "baseline": 5200000, "prediction": 5300000 } ] },
     { "type": "line", "title": "Units Shipped", "x": { "key": "month" }, "y": { "format": "compact" },
-      "series": [{ "key": "units", "color": "blue" }],
+      "series": [{ "key": "units", "color": "secondary" }],
       "data": [ { "month": "Jan", "units": 1800 } ] }
   ]
 }
