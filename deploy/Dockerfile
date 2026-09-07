@@ -44,8 +44,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
 RUN python3 -m pip install --break-system-packages --no-cache-dir uv \
-    && uv python install 3.13 \
-    && UV_PYTHON_BIN="$(uv python find 3.13)" \
+    && uv python install 3.13.14 \
+    && UV_PYTHON_BIN="$(uv python find 3.13.14)" \
     && ln -sf "$UV_PYTHON_BIN" /usr/local/bin/python \
     && ln -sf "$UV_PYTHON_BIN" /usr/local/bin/python3
 
@@ -100,6 +100,26 @@ RUN chmod +x /app/deploy/start_web.py \
     && chown 1000:1000 /app/data
 
 # =============================================================================
+# Optional OpenShell-enabled builder
+# =============================================================================
+#
+# OpenShell remains an explicitly selected deployment dependency rather than a
+# dependency of every AI-Q image. The published adapter currently declares an
+# older DeepAgents range than AI-Q uses, so install it without dependency
+# resolution after installing the certified SDK. The adapter surface is covered
+# by AI-Q's OpenShell tests against the locked DeepAgents runtime.
+FROM builder AS openshell-builder
+
+RUN OPENSHELL_VERSION="$(/app/.venv/bin/python -c \
+        "import pathlib,tomllib; c=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['aiq']['openshell']; print(c['release-tag'].removeprefix('v'))")" \
+    && OPENSHELL_ADAPTER_VERSION="$(/app/.venv/bin/python -c \
+        "import pathlib,tomllib; c=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['aiq']['openshell']; print(c['adapter-version'])")" \
+    && uv pip install "openshell==${OPENSHELL_VERSION}" \
+    && uv pip install --no-deps "langchain-nvidia-openshell==${OPENSHELL_ADAPTER_VERSION}" \
+    && /app/.venv/bin/python -c \
+        "import langchain_nvidia_openshell, openshell; print(f'✓ OpenShell SDK {openshell.__version__} and adapter {langchain_nvidia_openshell.__version__} installed')"
+
+# =============================================================================
 # Stage 2: Development (includes CLI)
 # =============================================================================
 FROM builder AS dev-builder
@@ -113,12 +133,13 @@ RUN /app/.venv/bin/python -c "import aiq_api; import aiq_research_cli; import ai
 # =============================================================================
 # Stage 3: Development runtime
 # =============================================================================
-FROM nvcr.io/nvidia/distroless/python:3.13-v4.0.5 AS dev
+FROM nvcr.io/nvidia/distroless/python:3.13-v4.0.8 AS dev
 
 WORKDIR /app
 
 COPY --from=dev-builder /opt/uv-python /opt/uv-python
 COPY --from=dev-builder /app /app
+COPY LICENSE LICENSE-THIRD-PARTY /licenses/
 
 USER 1000:1000
 
@@ -133,13 +154,14 @@ ENTRYPOINT ["python", "/app/deploy/entrypoint.py"]
 # =============================================================================
 # Stage 4: Release (production - no CLI)
 # =============================================================================
-FROM nvcr.io/nvidia/distroless/python:3.13-v4.0.5 AS release
+FROM nvcr.io/nvidia/distroless/python:3.13-v4.0.8 AS release
 
 WORKDIR /app
 
 # Copy from base builder (no CLI)
 COPY --from=builder /opt/uv-python /opt/uv-python
 COPY --from=builder /app /app
+COPY LICENSE LICENSE-THIRD-PARTY /licenses/
 
 USER 1000:1000
 
