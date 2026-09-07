@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import json
 from typing import Any
 
@@ -20,6 +21,9 @@ from langchain_core.messages import BaseMessage
 from langchain_core.messages import trim_messages
 
 from aiq_agent.common import parse_data_sources
+
+from .request_context import ChatRequestContext
+from .request_context import DatabaseName
 
 
 def trim_message_history(messages: list[BaseMessage], max_tokens: int) -> list[BaseMessage]:
@@ -96,36 +100,63 @@ def _extract_text_from_message(message: Any) -> str | None:
     return None
 
 
-def _extract_query_from_text(text: str) -> tuple[str, list[str] | None]:
+def _clean_optional_string(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _get_declared_object_field(payload: Any, name: str) -> Any:
+    """Read an object field without triggering dynamic fallback attributes."""
+    pydantic_extra = getattr(payload, "__pydantic_extra__", None)
+    if isinstance(pydantic_extra, dict) and name in pydantic_extra:
+        return pydantic_extra[name]
+    try:
+        inspect.getattr_static(payload, name)
+    except AttributeError:
+        return None
+    return getattr(payload, name)
+
+
+def _extract_context_from_text(text: str) -> ChatRequestContext:
     if not text:
-        return ("", None)
+        return ChatRequestContext(query_text="")
     trimmed = text.strip()
     if trimmed.startswith("{") and trimmed.endswith("}"):
         try:
             payload = json.loads(trimmed)
         except json.JSONDecodeError:
-            return (text, None)
+            return ChatRequestContext(query_text=text)
         if isinstance(payload, dict):
-            data_sources = parse_data_sources(payload.get("data_sources"))
             query_text = payload.get("query") or payload.get("text")
             if isinstance(query_text, str) and query_text.strip():
-                return (query_text.strip(), data_sources)
-    return (text, None)
+                return ChatRequestContext(
+                    query_text=query_text.strip(),
+                    data_sources=parse_data_sources(payload.get("data_sources")),
+                    active_report_job_id=_clean_optional_string(payload.get("active_report_job_id")),
+                    database_name=payload.get("database_name"),
+                )
+    return ChatRequestContext(query_text=text)
 
 
-def _extract_query_and_sources(payload: Any) -> tuple[str, list[str] | None]:
-    """Extract query text and data sources from various payload formats.
+def _extract_query_context(payload: Any) -> ChatRequestContext:
+    """Extract query text, data sources, report context, and database scope from payloads.
 
     Returns:
-        Tuple of (query_text, data_sources).
+        ChatRequestContext.
         - data_sources is None if not specified, meaning use all configured tools
         - data_sources is a list if explicitly specified (use only those)
+        - active_report_job_id is optional report context for router decisions
     """
     if isinstance(payload, dict):
         content = payload.get("content", {}) if isinstance(payload.get("content"), dict) else {}
-        data_sources = parse_data_sources(payload.get("data_sources")) or parse_data_sources(
-            content.get("data_sources")
+        # Use `is None` (not `or`): an explicit empty list means "no data-source tools"
+        # and must be preserved rather than falling through to the nested/inline value.
+        data_sources = parse_data_sources(payload.get("data_sources"))
+        if data_sources is None:
+            data_sources = parse_data_sources(content.get("data_sources"))
+        active_report_job_id = _clean_optional_string(payload.get("active_report_job_id")) or _clean_optional_string(
+            content.get("active_report_job_id")
         )
+        database_name = payload.get("database_name") if "database_name" in payload else content.get("database_name")
         messages = content.get("messages", [])
         query_text = None
         if isinstance(messages, list) and messages:
@@ -141,14 +172,25 @@ def _extract_query_and_sources(payload: Any) -> tuple[str, list[str] | None]:
                 payload.get("text")
             )
         if query_text:
-            inline_query, inline_sources = _extract_query_from_text(query_text)
-            query_text = inline_query
-            data_sources = data_sources or inline_sources
-        return (query_text or "", data_sources)
+            inline_context = _extract_context_from_text(query_text)
+            query_text = inline_context.query_text
+            if data_sources is None:
+                data_sources = inline_context.data_sources
+            active_report_job_id = active_report_job_id or inline_context.active_report_job_id
+            if database_name is None:
+                database_name = inline_context.database_name
+        return ChatRequestContext(
+            query_text=query_text or "",
+            data_sources=data_sources,
+            active_report_job_id=active_report_job_id,
+            database_name=database_name,
+        )
 
     messages = getattr(payload, "messages", None)
     if isinstance(messages, list):
         data_sources = parse_data_sources(getattr(payload, "data_sources", None))
+        active_report_job_id = _clean_optional_string(getattr(payload, "active_report_job_id", None))
+        database_name = _get_declared_object_field(payload, "database_name")
         query_text = None
         for msg in reversed(messages):
             if _is_user_role(getattr(msg, "role", None)):
@@ -158,11 +200,33 @@ def _extract_query_and_sources(payload: Any) -> tuple[str, list[str] | None]:
         if not query_text and messages:
             query_text = _extract_text_from_message(messages[-1])
         if query_text:
-            inline_query, inline_sources = _extract_query_from_text(query_text)
-            query_text = inline_query
-            data_sources = data_sources or inline_sources
-        return (query_text or "", data_sources)
+            inline_context = _extract_context_from_text(query_text)
+            query_text = inline_context.query_text
+            if data_sources is None:
+                data_sources = inline_context.data_sources
+            active_report_job_id = active_report_job_id or inline_context.active_report_job_id
+            if database_name is None:
+                database_name = inline_context.database_name
+        return ChatRequestContext(
+            query_text=query_text or "",
+            data_sources=data_sources,
+            active_report_job_id=active_report_job_id,
+            database_name=database_name,
+        )
 
-    query_text = str(payload)
-    inline_query, inline_sources = _extract_query_from_text(query_text)
-    return (inline_query, inline_sources)
+    return _extract_context_from_text(str(payload))
+
+
+def _extract_database_name_from_request_metadata(metadata: Any) -> DatabaseName | None:
+    """Recover database scope retained by NAT's original HTTP request metadata."""
+    payload = getattr(metadata, "payload", None)
+    if not isinstance(payload, dict):
+        return None
+    return _extract_query_context(payload).database_name
+
+
+def _extract_query_and_sources(payload: Any) -> tuple[str, list[str] | None]:
+    """Compatibility wrapper returning only query text and data sources."""
+
+    context = _extract_query_context(payload)
+    return (context.query_text, context.data_sources)

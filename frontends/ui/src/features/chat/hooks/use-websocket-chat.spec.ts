@@ -3,7 +3,7 @@
 
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { vi, describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { useWebSocketChat } from './use-websocket-chat'
+import { useWebSocketChat, deriveStepContent, deriveArgSummary } from './use-websocket-chat'
 import { useAuth } from '@/adapters/auth'
 import { createNATWebSocketClient } from '@/adapters/api/websocket-client'
 
@@ -341,6 +341,37 @@ describe('useWebSocketChat', () => {
     // sendMessage is called with content and enabled data sources
     expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', expect.any(Array))
     expect(mockSetLoading).toHaveBeenCalledWith(false)
+  })
+
+  test('sendMessage includes active report job id from latest completed report message', () => {
+    mockWsClient.isConnected.mockReturnValue(true)
+    mockStoreState.currentConversation = {
+      id: 'conv-1',
+      userId: 'user-1',
+      messages: [
+        {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'Report ready',
+          messageType: 'agent_response',
+          deepResearchJobId: 'job-123',
+          showViewReport: true,
+          reportContent: '# Report',
+        },
+      ],
+    }
+
+    const { result } = renderWebSocketHook()
+
+    act(() => {
+      result.current.sendMessage('What is the biggest risk?')
+    })
+
+    expect(mockWsClient.sendMessage).toHaveBeenCalledWith(
+      'What is the biggest risk?',
+      expect.any(Array),
+      'job-123',
+    )
   })
 
   test('sendMessage while the existing socket is connecting buffers instead of creating a parallel client', () => {
@@ -1191,7 +1222,11 @@ describe('useWebSocketChat', () => {
 
     // Simulate response with deep research escalation signal
     act(() => {
-      capturedCallbacks.onResponse?.('Deep research job submitted. Job ID: abc123-def456', 'complete', false)
+      capturedCallbacks.onResponse?.(
+        JSON.stringify({ type: 'job_escalation', kind: 'deep_research', job_id: 'abc123-def456' }),
+        'complete',
+        false
+      )
     })
 
     // Should detect deep research and call banner with 'starting' status
@@ -1207,6 +1242,83 @@ describe('useWebSocketChat', () => {
       })
     )
     expect(mockStartDeepResearch).toHaveBeenCalledWith('abc123-def456', 'msg-1')
+  })
+
+  test('detects report-edit escalation and starts SSE streaming for the child job', () => {
+    const mockStartDeepResearch = vi.fn()
+    const mockUpdateConversationTitle = vi.fn()
+    const localMockAddAgentResponseWithMeta = vi.fn(() => 'msg-1')
+    vi.mocked(useChatStore).mockImplementation((selector?: (s: any) => any) => {
+      const state = {
+        ...mockStoreState,
+        addUserMessage: mockAddUserMessage,
+        addAgentResponse: mockAddAgentResponse,
+        addAgentResponseWithMeta: localMockAddAgentResponseWithMeta,
+        addThinkingStep: mockAddThinkingStep,
+        appendToThinkingStep: mockAppendToThinkingStep,
+        completeThinkingStep: mockCompleteThinkingStep,
+        updateThinkingStepByFunctionName: mockUpdateThinkingStepByFunctionName,
+        findThinkingStepByFunctionName: mockFindThinkingStepByFunctionName,
+        setReportContent: mockSetReportContent,
+        addStatusCard: mockAddStatusCard,
+        addAgentPrompt: mockAddAgentPrompt,
+        addErrorCard: mockAddErrorCard,
+        setCurrentStatus: mockSetCurrentStatus,
+        setPendingInteraction: mockSetPendingInteraction,
+        clearPendingInteraction: mockClearPendingInteraction,
+        setLoading: mockSetLoading,
+        setStreaming: mockSetStreaming,
+        clearThinkingSteps: mockClearThinkingSteps,
+        clearReportContent: mockClearReportContent,
+        createConversation: mockCreateConversation,
+        setCurrentUser: mockSetCurrentUser,
+        getUserConversations: mockGetUserConversations,
+        selectConversation: mockSelectConversation,
+        respondToPrompt: mockRespondToPrompt,
+        addPlanMessage: mockAddPlanMessage,
+        updatePlanMessageResponse: mockUpdatePlanMessageResponse,
+        addDeepResearchBanner: mockAddDeepResearchBanner,
+        startDeepResearch: mockStartDeepResearch,
+        updateConversationTitle: mockUpdateConversationTitle,
+      }
+      return selector ? selector(state) : state
+    })
+
+    // A real conversation with a prior user message: a report edit must NOT rename
+    // the existing report conversation to the edit instruction.
+    mockStoreState.currentConversation = {
+      id: 'conv-1',
+      userId: 'user-1',
+      messages: [{ id: 'u1', role: 'user', content: 'Rewrite this report to be shorter' }],
+    } as unknown as typeof mockStoreState.currentConversation
+
+    renderWebSocketHook()
+    mockStoreState.isStreaming = true
+
+    // Report edit submits a child report_rewriter job that produces a full report,
+    // pollable through the same SSE path as deep research.
+    act(() => {
+      capturedCallbacks.onResponse?.(
+        JSON.stringify({ type: 'job_escalation', kind: 'report_edit', job_id: 'abcd1234-ef56' }),
+        'complete',
+        false
+      )
+    })
+
+    expect(mockAddDeepResearchBanner).toHaveBeenCalledWith('starting', 'abcd1234-ef56')
+    expect(localMockAddAgentResponseWithMeta).toHaveBeenCalledWith(
+      '',
+      false,
+      expect.objectContaining({
+        deepResearchJobId: 'abcd1234-ef56',
+        deepResearchJobStatus: 'submitted',
+        isDeepResearchActive: true,
+      })
+    )
+    expect(mockStartDeepResearch).toHaveBeenCalledWith('abcd1234-ef56', 'msg-1')
+    // Report edits reuse the deep-research escalation plumbing but must not rename
+    // the conversation to the edit instruction (deep-research-only behavior).
+    expect(mockUpdateConversationTitle).not.toHaveBeenCalled()
   })
 })
 
@@ -2193,5 +2305,78 @@ describe('useWebSocketChat -- token rotation', () => {
     )
     expect(mockWsClient.sendMessage).not.toHaveBeenCalled()
     expect(mockSetLoading).toHaveBeenCalledWith(true)
+  })
+})
+
+describe('deriveStepContent -- trace steps store output, not the prompt input', () => {
+  const PRIOR_ASSISTANT_ANSWER =
+    'A gene is a segment of DNA that codes for a protein, while a genome is the ' +
+    'complete set of genetic material in an organism.'
+
+  test('intent-classifier (non-folded) drops the prior-answer input, keeps the output', () => {
+    const payload =
+      `**Function Input:** ${PRIOR_ASSISTANT_ANSWER}\n` +
+      '**Function Output:** intent=visualization'
+
+    const derived = deriveStepContent(payload)
+
+    expect(derived).toContain('intent=visualization')
+    expect(derived).not.toContain('Gene')
+    expect(derived).not.toContain('genome')
+    expect(derived).not.toContain(PRIOR_ASSISTANT_ANSWER)
+  })
+
+  test('shallow research agent (non-folded) drops the prior-answer input, keeps the output', () => {
+    const payload =
+      `**Function Input:** ${PRIOR_ASSISTANT_ANSWER}\n` +
+      '**Function Output:** NVDA rose from 12 to 118 over five years.'
+
+    const derived = deriveStepContent(payload)
+
+    expect(derived).toContain('NVDA rose from 12 to 118 over five years.')
+    expect(derived).not.toContain('Gene')
+    expect(derived).not.toContain('genome')
+    expect(derived).not.toContain(PRIOR_ASSISTANT_ANSWER)
+  })
+
+  test('folded reasoning step still keeps only its output half', () => {
+    const payload = '**Function Input:**\nq\n**Function Output:**\nthe note'
+
+    expect(deriveStepContent(payload)).toBe('the note')
+  })
+
+  test('marker-less payload passes through unchanged', () => {
+    expect(deriveStepContent('a plain note')).toBe('a plain note')
+  })
+})
+
+describe('deriveArgSummary -- only real tools keep an arg summary, agents leak no history', () => {
+  const PRIOR_ASSISTANT_ANSWER =
+    'A gene is a segment of DNA that codes for a protein, while a genome is the ' +
+    'complete set of genetic material in an organism.'
+
+  test('an intent-classifier step gets no arg summary, so its prior-answer input never leaks', () => {
+    const payload = `**Function Input:** ${PRIOR_ASSISTANT_ANSWER}\n**Function Output:** shallow`
+
+    expect(deriveArgSummary('intent_classifier', payload)).toBeUndefined()
+  })
+
+  test('a shallow-research-agent step gets no arg summary either', () => {
+    const payload = `**Function Input:** ${PRIOR_ASSISTANT_ANSWER}\n**Function Output:** NVDA rose from 12 to 118.`
+
+    expect(deriveArgSummary('shallow_research_agent', payload)).toBeUndefined()
+  })
+
+  test('a real web-search tool keeps its query and carries no prior-answer text', () => {
+    const query = 'NVDA stock price 5 year historical data'
+    const payload = `**Function Input:** ${query}\n**Function Output:** Prices ranged from 12 to 118.`
+
+    const summary = deriveArgSummary('web_search_tool', payload)
+
+    expect(summary).toBeDefined()
+    expect(summary).toContain(query)
+    expect(summary).not.toContain('Gene')
+    expect(summary).not.toContain('genome')
+    expect(summary).not.toContain(PRIOR_ASSISTANT_ANSWER)
   })
 })

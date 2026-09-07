@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run ruff check *)",
+      "Bash(uv run ruff format --check *)",
+      "Bash(uv lock --check)",
+      "Bash(uv pip check)",
+      "Bash(uv pip list *)",
+      "Bash(uv tree *)",
+      "Bash(memory_pressure)",
+      "Bash(dns-sd *)",
+      "Bash(curl -s http://localhost:8000/*)",
+      "Bash(curl -sf http://localhost:8000/*)",
+      "Bash(curl -s http://dgxspark.local:8001/v1/models)",
+      "mcp__claude-in-chrome__read_page",
+      "mcp__claude-in-chrome__get_page_text",
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__claude-in-chrome__read_console_messages",
+      "mcp__claude-in-chrome__read_network_requests",
+      "mcp__claude-in-chrome__find",
+      "mcp__claude-in-chrome__list_connected_browsers",
+      "mcp__claude_ai_Hugging_Face__hub_repo_search",
+      "mcp__claude_ai_Hugging_Face__hub_repo_details",
+      "mcp__claude_ai_Hugging_Face__hf_whoami",
+      "mcp__claude_ai_Hugging_Face__hf_fs",
+      "mcp__claude_ai_Tavily__tavily_search",
+      "mcp__claude_ai_Tavily__tavily_extract"
+    ]
+  }
+}

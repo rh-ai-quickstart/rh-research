@@ -69,10 +69,11 @@ Run the narrowest commands first; broaden only if the change touches shared code
 uv pip install -e ./sources/my_data_source
 uv run pytest sources/my_data_source/tests
 uv run ruff check sources/my_data_source
+uv run ruff format --check sources/my_data_source
 ```
 
-Expected: the package installs, its tests pass, and Ruff reports no lint
-failures for the new source package.
+Expected: the package installs, its tests pass, and Ruff reports no lint or
+format failures for the new source package.
 
 ## Common Mistakes
 
@@ -88,6 +89,7 @@ failures for the new source package.
 
 ## Related Skills
 
+- `aiq-configure-workflow`
 - `aiq-add-tool`
 - `aiq-release-qa`
 - `aiq-prepare-pr`

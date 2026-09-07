@@ -15,14 +15,21 @@
 
 """Tests for citation verification module."""
 
+import logging
+from html import escape
+
 import pytest
 
 from aiq_agent.common.citation_verification import _PARSER_REGISTRY
 from aiq_agent.common.citation_verification import EmptySourceRegistryError
+from aiq_agent.common.citation_verification import EmptySourceRegistryReason
 from aiq_agent.common.citation_verification import SourceEntry
 from aiq_agent.common.citation_verification import SourceRegistry
 from aiq_agent.common.citation_verification import _normalize_url
 from aiq_agent.common.citation_verification import _parse_citation_key
+from aiq_agent.common.citation_verification import classify_empty_source_registry_reason
+from aiq_agent.common.citation_verification import clean_extracted_url
+from aiq_agent.common.citation_verification import extract_http_urls
 from aiq_agent.common.citation_verification import extract_sources_from_tool_result
 from aiq_agent.common.citation_verification import register_source_parser
 from aiq_agent.common.citation_verification import sanitize_report
@@ -36,6 +43,78 @@ def fixture_restore_parser_registry():
     yield
     _PARSER_REGISTRY.clear()
     _PARSER_REGISTRY.extend(original)
+
+
+class TestEmptySourceRegistryContract:
+    """Tests for the public empty-source failure contract."""
+
+    @pytest.mark.parametrize(
+        ("reason", "expected_message"),
+        [
+            (
+                EmptySourceRegistryReason.NO_SOURCES_SELECTED,
+                "No data sources are selected. Select at least one data source and run the research again.",
+            ),
+            (
+                EmptySourceRegistryReason.NO_SOURCE_RESULTS,
+                "The selected data sources returned no results. "
+                "Try rephrasing the question or selecting different data sources.",
+            ),
+            (
+                EmptySourceRegistryReason.SOURCE_TOOLS_UNAVAILABLE,
+                "The selected data source tools are currently unavailable. "
+                "Check their configuration or select different data sources and run the research again.",
+            ),
+        ],
+    )
+    def test_reason_has_safe_actionable_public_message(self, reason, expected_message):
+        error = EmptySourceRegistryError(reason=reason)
+
+        assert error.reason is reason
+        assert error.public_message == expected_message
+        assert "Please try again" not in error.public_message
+
+    def test_reason_values_are_stable(self):
+        assert [reason.value for reason in EmptySourceRegistryReason] == [
+            "no_sources_selected",
+            "no_source_results",
+            "source_tools_unavailable",
+        ]
+
+    @pytest.mark.parametrize(
+        ("data_sources", "available_count", "unavailable_tools", "expected"),
+        [
+            ([], 0, ["web_search (missing key)"], EmptySourceRegistryReason.NO_SOURCES_SELECTED),
+            (["web"], 0, ["web_search (missing key)"], EmptySourceRegistryReason.SOURCE_TOOLS_UNAVAILABLE),
+            (None, 0, ["web_search (missing key)"], EmptySourceRegistryReason.SOURCE_TOOLS_UNAVAILABLE),
+            (["web"], 1, ["scholar_search (missing key)"], EmptySourceRegistryReason.NO_SOURCE_RESULTS),
+            (["web"], 1, [], EmptySourceRegistryReason.NO_SOURCE_RESULTS),
+            (None, 0, [], EmptySourceRegistryReason.NO_SOURCE_RESULTS),
+        ],
+    )
+    def test_classification_distinguishes_selection_availability_and_empty_results(
+        self, data_sources, available_count, unavailable_tools, expected
+    ):
+        assert classify_empty_source_registry_reason(data_sources, available_count, unavailable_tools) is expected
+
+    def test_preserves_compatibility_fields_and_optional_generated_answer(self):
+        error = EmptySourceRegistryError(
+            "deep research",
+            unavailable_tools=["web_search"],
+            available_count=2,
+            generated_answer="Sanitized draft",
+        )
+
+        assert error.agent_type == "deep research"
+        assert error.unavailable_tools == ["web_search"]
+        assert error.available_count == 2
+        assert error.generated_answer == "Sanitized draft"
+        assert error.reason is EmptySourceRegistryReason.NO_SOURCE_RESULTS
+        assert error.public_response == (
+            "Sanitized draft\n\n"
+            "The selected data sources returned no results. "
+            "Try rephrasing the question or selecting different data sources."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +399,37 @@ class TestSourceRegistry:
 class TestGenericUrlExtractor:
     """Tests for the generic URL extractor (works for all tool output formats)."""
 
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "https://literal.example/path](not-a-markdown-target)",
+            "https://literal.example/path](https://target.example/incomplete",
+        ],
+    )
+    def test_literal_or_incomplete_markdown_delimiter_is_preserved(self, candidate):
+        assert clean_extracted_url(candidate) == candidate
+
+    def test_complete_http_label_and_target_selects_markdown_target(self):
+        candidate = "https://label.example/path](https://target.example/article)"
+
+        assert clean_extracted_url(candidate) == "https://target.example/article"
+
+    @pytest.mark.parametrize("punctuation", [".", ",", ";"])
+    def test_complete_markdown_link_followed_by_punctuation_selects_target(self, punctuation):
+        content = f"[https://label.example/path](https://target.example/article){punctuation}"
+
+        assert extract_http_urls(content) == ["https://target.example/article"]
+
+    def test_markdown_target_preserves_balanced_parentheses(self):
+        content = "[https://label.example/path](https://en.wikipedia.org/wiki/Function_(mathematics))."
+
+        assert extract_http_urls(content) == ["https://en.wikipedia.org/wiki/Function_(mathematics)"]
+
+    def test_extract_http_urls_ignores_non_http_schemes(self):
+        content = "ftp://files.example/archive mailto:user@example.com https://secure.example http://plain.example"
+
+        assert extract_http_urls(content) == ["https://secure.example", "http://plain.example"]
+
     def test_tavily_xml_format(self):
         content = (
             '<Document href="https://example.com/article">\n'
@@ -329,6 +439,21 @@ class TestGenericUrlExtractor:
         entries = extract_sources_from_tool_result("tavily_web_search", content)
         assert len(entries) == 1
         assert entries[0].url == "https://example.com/article"
+
+    def test_escaped_document_url_and_title_round_trip(self):
+        url = 'https://example.com/search?q="quoted"&next=<unsafe>&close=</Document>'
+        title = 'Research & "Roadmap" <2026> </title>'
+        content = (
+            f'<Document href="{escape(url, quote=True)}">\n'
+            f"<title>\n{escape(title, quote=True)}\n</title>\n"
+            "Evidence\n</Document>"
+        )
+
+        entries = extract_sources_from_tool_result("tavily_web_search", content)
+
+        assert len(entries) == 1
+        assert entries[0].url == url
+        assert entries[0].title == title
 
     def test_multiple_urls_deduplicated(self):
         content = (
@@ -385,6 +510,45 @@ class TestGenericUrlExtractor:
             source_id="news_search",
         )
         assert entries == []
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Error 432: search request rejected",
+            "Search Error 432",
+            "Search failed with status 429",
+            '{"status_code": 429, "error": "rate limited"}',
+        ],
+    )
+    def test_provider_failure_statuses_are_not_citable(self, content):
+        entries = extract_sources_from_tool_result("web_search_tool", content, source_id="web_search")
+
+        assert entries == []
+
+    def test_error_payload_urls_are_not_citable(self):
+        content = '{"status": 432, "error": "see https://provider.example/errors/432"}'
+
+        entries = extract_sources_from_tool_result("web_search_tool", content, source_id="web_search")
+
+        assert entries == []
+
+    def test_typed_error_result_urls_are_not_citable(self):
+        entries = extract_sources_from_tool_result(
+            "web_search_tool",
+            "See https://provider.example/errors/unknown",
+            source_id="web_search",
+            result_status="error",
+        )
+
+        assert entries == []
+
+    def test_valid_http_status_explanation_remains_citable(self):
+        content = "An HTTP 404 status code means not found. See https://developer.mozilla.org/en-US/docs/Web/HTTP/404"
+
+        entries = extract_sources_from_tool_result("web_search_tool", content, source_id="web_search")
+
+        assert len(entries) == 1
+        assert entries[0].url == "https://developer.mozilla.org/en-US/docs/Web/HTTP/404"
 
     def test_duplicate_urls_deduplicated(self):
         content = "See https://example.com/page and also https://example.com/page for reference."
@@ -542,6 +706,31 @@ class TestVerifyCitations:
         reg.add(SourceEntry(citation_key="report.pdf, p.15", title="report.pdf", source_type="knowledge_layer"))
         return reg
 
+    def test_verification_and_sanitization_logs_do_not_expose_source_locators(self, caplog):
+        registry = SourceRegistry()
+        private_url = "https://private.example/document?access_token=secret-value"
+        rejected_url = "https://fabricated.example/private-path"
+        citation_key = "confidential-plan.pdf, p.7"
+        shortened_url = "https://bit.ly/private-report"
+        registry.add(SourceEntry(url=private_url, title="Private", source_type="web"))
+        registry.add(SourceEntry(citation_key=citation_key, source_type="knowledge_layer"))
+        report = (
+            "Supported [1] [2], unsupported [3].\n\n"
+            "## Sources\n"
+            f"[1] Private: {private_url}\n"
+            f"[2] {citation_key}\n"
+            f"[3] Fabricated: {rejected_url}"
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="aiq_agent.common.citation_verification"):
+            verify_citations(report, registry)
+            sanitize_report(f"Short link [1].\n\n## Sources\n[1] Short: {shortened_url}")
+
+        assert private_url not in caplog.text
+        assert rejected_url not in caplog.text
+        assert citation_key not in caplog.text
+        assert shortened_url not in caplog.text
+
     def test_empty_registry_returns_unchanged(self):
         registry = SourceRegistry()
         report = "Some report with [1] citations.\n\n## Sources\n[1] Fake: https://fake.com"
@@ -577,7 +766,7 @@ class TestVerifyCitations:
         report = "Finding one [1]. Missing source [3]. Finding two [2]."
         result = verify_citations(report, registry, reference_sources=registry.all_sources()[:2])
 
-        assert "Missing source ." in result.verified_report
+        assert "Missing source." in result.verified_report
         assert "[3]" not in result.verified_report
         assert "[1] Article 1: https://valid.com/article1" in result.verified_report
         assert "[2] Article 2: https://valid.com/article2" in result.verified_report
@@ -671,6 +860,43 @@ class TestVerifyCitations:
         assert len(result.valid_citations) == 2
         assert len(result.removed_citations) == 0
 
+    def test_plain_sources_heading_and_collapsed_lines_are_normalized(self, registry):
+        report = (
+            "Finding one [1]. Finding two [2].\n\n"
+            "Sources\n"
+            "[1] Article 1: https://valid.com/article1 [2] Article 2: https://valid.com/article2"
+        )
+        result = verify_citations(report, registry)
+
+        assert "## Sources\n[1] Article 1: https://valid.com/article1\n" in result.verified_report
+        assert "[2] Article 2: https://valid.com/article2" in result.verified_report
+        assert len(result.valid_citations) == 2
+        assert not result.removed_citations
+
+    def test_bracketed_year_in_source_title_is_not_split(self, registry):
+        report = "Finding [1].\n\n## Sources\n[1] Semiconductor outlook [2024] update: https://valid.com/article1"
+        result = verify_citations(report, registry)
+
+        assert "[1] Semiconductor outlook [2024] update: https://valid.com/article1" in result.verified_report
+        assert len(result.valid_citations) == 1
+        assert not result.removed_citations
+
+    def test_bare_sources_line_does_not_terminate_body_before_marked_sources(self, registry):
+        report = (
+            "Summary.\n"
+            "Sources\n"
+            "This sentence is part of the report body and should stay there [1].\n\n"
+            "## Sources\n"
+            "[1] Article 1: https://valid.com/article1"
+        )
+        result = verify_citations(report, registry)
+
+        assert result.verified_report.startswith(
+            "Summary.\nSources\nThis sentence is part of the report body and should stay there [1]."
+        )
+        assert len(result.valid_citations) == 1
+        assert not result.removed_citations
+
     def test_ordered_list_references_are_normalized_and_verified(self, registry):
         report = (
             "Finding one [1]. Finding two [2].\n\n"
@@ -698,7 +924,7 @@ class TestVerifyCitations:
         assert len(result.removed_citations) == 1
         assert result.removed_citations[0]["number"] == 2
         assert result.removed_citations[0]["reason"] == "url_not_in_registry"
-        assert "Good finding [1]. Bad finding ." in result.verified_report
+        assert "Good finding [1]. Bad finding." in result.verified_report
         assert "Fake Source" not in result.verified_report
 
     def test_ordered_list_parenthesis_references_are_normalized_and_verified(self, registry):
@@ -746,7 +972,7 @@ class TestVerifyCitations:
         report = "Good finding [1]. Missing reference [3].\n\n## Sources\n[1] Article 1: https://valid.com/article1"
         result = verify_citations(report, registry)
 
-        assert "Missing reference ." in result.verified_report
+        assert "Missing reference." in result.verified_report
         assert "[3]" not in result.verified_report
         assert len(result.valid_citations) == 1
         assert not result.removed_citations
@@ -760,8 +986,8 @@ class TestVerifyCitations:
         )
         result = verify_citations(report, registry)
 
-        assert "Bad finding ." in result.verified_report
-        assert "Missing reference ." in result.verified_report
+        assert "Bad finding." in result.verified_report
+        assert "Missing reference." in result.verified_report
         assert "[2]" not in result.verified_report
         assert "[3]" not in result.verified_report
         assert len(result.valid_citations) == 1
@@ -817,6 +1043,19 @@ class TestVerifyCitations:
         report = "Finding [1].\n\n**References:**\n- [1] Article 1 - https://valid.com/article1"
         result = verify_citations(report, registry)
         assert len(result.valid_citations) == 1
+
+    def test_references_with_markdown_link_urls(self, registry):
+        report = (
+            "Finding [1][2].\n\n"
+            "**References:**\n"
+            "- [1] Article 1 - [https://valid.com/article1](https://valid.com/article1)\n"
+            "- [2] Article 2 - [https://valid.com/article2](https://valid.com/article2)"
+        )
+
+        result = verify_citations(report, registry)
+
+        assert len(result.valid_citations) == 2
+        assert not result.removed_citations
 
     def test_references_bold_without_colon(self, registry):
         """Model sometimes outputs **References** without the colon."""
@@ -917,7 +1156,7 @@ class TestVerifyCitations:
         assert "Time in Mumbai [1]." in result.verified_report
         assert "Time in Tokyo [1]." in result.verified_report
         # Reference section keeps exactly one entry for the source.
-        ref_section = result.verified_report.split("**References**", 1)[1]
+        ref_section = result.verified_report.split("## Sources", 1)[1]
         assert ref_section.count("mcp_time__get_current_time") == 1
         assert "[2]" not in ref_section
 
@@ -975,6 +1214,88 @@ class TestVerifyCitations:
         assert ref_section.count("[1]") == 1
         assert "[2]" not in ref_section
         assert ref_section.count("[3]") == 1
+
+
+class TestVerifyCitationsBackfill:
+    """Backfill of URL-less ``[N] Title`` lines from the writer-facing list.
+
+    The writer sometimes emits ``[N] Title`` and drops the ``: url`` suffix.
+    These tests cover recovering the URL from ``reference_sources`` (same
+    captured registry) without weakening precision.
+    """
+
+    @pytest.fixture(name="registry")
+    def fixture_registry(self):
+        reg = SourceRegistry()
+        reg.add(SourceEntry(url="https://amd.com/q1-2024", title="AMD Q1 2024 Financial Results", source_type="tavily"))
+        reg.add(SourceEntry(url="https://meta.com/q1-2024", title="Meta Q1 2024 Results", source_type="tavily"))
+        reg.add(SourceEntry(citation_key="report.pdf, p.15", title="Internal Report", source_type="knowledge_layer"))
+        return reg
+
+    def test_url_less_lines_backfilled_from_reference_sources(self, registry):
+        report = (
+            "AMD spent more [1]. Meta followed [2].\n\n"
+            "## Sources\n"
+            "[1] AMD Q1 2024 Financial Results\n"
+            "[2] Meta Q1 2024 Results"
+        )
+        result = verify_citations(report, registry, reference_sources=registry.all_sources())
+
+        assert "[1] AMD Q1 2024 Financial Results: https://amd.com/q1-2024" in result.verified_report
+        assert "[2] Meta Q1 2024 Results: https://meta.com/q1-2024" in result.verified_report
+        assert len(result.valid_citations) == 2
+        assert not result.removed_citations
+
+    def test_backfill_recovers_url_less_citation_key_source(self, registry):
+        report = "Per the internal report [1].\n\n## Sources\n[1] Internal Report"
+        result = verify_citations(report, registry, reference_sources=registry.all_sources())
+
+        assert len(result.valid_citations) == 1
+        assert result.valid_citations[0]["citation_key"] == "report.pdf, p.15"
+        assert not result.removed_citations
+        assert "[1]" in result.verified_report.split("## Sources", 1)[1]
+
+    def test_url_less_line_without_matching_reference_still_removed(self, registry):
+        report = "Claim [1].\n\n## Sources\n[1] Some Source The Writer Invented"
+        result = verify_citations(report, registry, reference_sources=registry.all_sources())
+
+        assert not result.valid_citations
+        assert len(result.removed_citations) == 1
+        assert result.removed_citations[0]["reason"] == "unverifiable"
+
+    def test_ambiguous_title_not_backfilled(self):
+        reg = SourceRegistry()
+        reg.add(SourceEntry(url="https://a.com/one", title="Quarterly Update", source_type="tavily"))
+        reg.add(SourceEntry(url="https://b.com/two", title="Quarterly Update", source_type="tavily"))
+        report = "Claim [1].\n\n## Sources\n[1] Quarterly Update"
+        result = verify_citations(report, reg, reference_sources=reg.all_sources())
+
+        assert not result.valid_citations
+        assert len(result.removed_citations) == 1
+        assert result.removed_citations[0]["reason"] == "unverifiable"
+
+    def test_aggregate_label_not_resurrected(self):
+        reg = SourceRegistry()
+        reg.add(SourceEntry(url="https://cnn.com/biz", title="CNN", source_type="tavily"))
+        report = "Markets moved [1].\n\n## Sources\n[1] CNN; Yahoo Finance; Barchart"
+        result = verify_citations(report, reg, reference_sources=reg.all_sources())
+
+        assert not result.valid_citations
+        assert len(result.removed_citations) == 1
+        assert result.removed_citations[0]["reason"] == "unverifiable"
+
+    def test_existing_url_and_key_paths_unchanged_without_reference_sources(self, registry):
+        report = (
+            "AMD [1]. Doc [2].\n\n"
+            "## Sources\n"
+            "[1] AMD Q1 2024 Financial Results: https://amd.com/q1-2024\n"
+            "[2] report.pdf, p.15"
+        )
+        result = verify_citations(report, registry)
+
+        assert len(result.valid_citations) == 2
+        assert not result.removed_citations
+        assert "https://amd.com/q1-2024" in result.verified_report
 
 
 # ---------------------------------------------------------------------------
@@ -1048,6 +1369,38 @@ class TestSanitizeReport:
         result = sanitize_report(report)
         assert result.body_urls_removed == 0
         assert "Finding [1]" in result.sanitized_report
+
+    def test_plain_sources_heading_and_collapsed_lines_are_sanitized(self):
+        report = (
+            "Finding [1]. Another finding [2].\n\n"
+            "Sources\n"
+            "[1] Title: https://example.com/article [2] Title: https://other.com/page"
+        )
+        result = sanitize_report(report)
+
+        assert "## Sources\n[1] Title: https://example.com/article\n" in result.sanitized_report
+        assert "[2] Title: https://other.com/page" in result.sanitized_report
+
+    def test_bracketed_year_in_sanitized_source_title_is_not_split(self):
+        report = "Finding [1].\n\n## Sources\n[1] Semiconductor outlook [2024] update: https://example.com/article"
+        result = sanitize_report(report)
+
+        assert "[1] Semiconductor outlook [2024] update: https://example.com/article" in result.sanitized_report
+
+    def test_bare_sources_line_does_not_terminate_sanitized_body_before_marked_sources(self):
+        report = (
+            "Summary.\n"
+            "Sources\n"
+            "This sentence is part of the report body and should stay there [1].\n\n"
+            "## Sources\n"
+            "[1] Title: https://example.com/article"
+        )
+        result = sanitize_report(report)
+
+        assert result.sanitized_report.startswith(
+            "Summary.\nSources\nThis sentence is part of the report body and should stay there [1]."
+        )
+        assert "## Sources\n[1] Title: https://example.com/article" in result.sanitized_report
 
     def test_shortened_url_removed_from_references(self):
         report = "Finding [1].\n\n## Sources\n[1] Article: https://bit.ly/abc123"

@@ -55,10 +55,50 @@ import {
   getWorkflowDisplayName,
   isFunctionStepName,
   formatPayload,
+  extractFoldedOutput,
+  splitPayload,
 } from '../lib/intermediate-step-parser'
+import { getToolArgSummary, isKnownTool } from '@/shared/components/research'
 
 const EMPTY_MESSAGES: ChatMessage[] = []
 const EMPTY_CONVERSATIONS: Conversation[] = []
+
+export const deriveStepContent = (payload: string): string =>
+  formatPayload(extractFoldedOutput(payload || ''))
+
+export const deriveArgSummary = (functionName: string, payload: string): string | undefined =>
+  isKnownTool(functionName)
+    ? getToolArgSummary(functionName, splitPayload(payload || '').input)
+    : undefined
+
+/**
+ * Structured async-job escalation signal parsed from a system_response `content` string.
+ *
+ * The backend (chat_researcher/agent.py `_job_escalation_message`) emits a compact JSON
+ * payload rather than a prose sentence so escalation detection is immune to wording or
+ * punctuation changes:
+ *   {"type":"job_escalation","kind":"deep_research"|"report_edit"|"data_science","job_id":"<id>"}
+ */
+interface JobEscalation {
+  kind: 'deep_research' | 'report_edit' | 'data_science'
+  jobId: string
+}
+
+function parseJobEscalation(content?: string): JobEscalation | null {
+  if (!content) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const obj = parsed as Record<string, unknown>
+  if (obj.type !== 'job_escalation') return null
+  if (obj.kind !== 'deep_research' && obj.kind !== 'report_edit' && obj.kind !== 'data_science') return null
+  if (typeof obj.job_id !== 'string' || obj.job_id.length === 0) return null
+  return { kind: obj.kind, jobId: obj.job_id }
+}
 
 /**
  * Buffer entry for an outgoing payload that has to bridge a socket
@@ -68,7 +108,14 @@ const EMPTY_CONVERSATIONS: Conversation[] = []
  * right `NATWebSocketClient` method.
  */
 type PendingOutgoing =
-  | { kind: 'message'; content: string; dataSources: string[]; deliveryRetryCount?: number }
+  | {
+      kind: 'message'
+      content: string
+      dataSources: string[]
+      activeReportJobId?: string
+      selectedModel?: string
+      deliveryRetryCount?: number
+    }
   | { kind: 'interaction'; interactionId: string; parentId: string; response: string; deliveryRetryCount?: number }
 
 type UnacknowledgedOutgoing = {
@@ -116,6 +163,18 @@ const WS_REFRESH_SOFT_GUARD_SECONDS = 60
  * because a single passing message proves the post-rotation auth is alive.
  */
 const MAX_CONSECUTIVE_AUTH_EXPIRED = 3
+
+export const getActiveReportJobId = (conversation: Conversation | null): string | undefined => {
+  if (!conversation) return undefined
+  const reportMessage = [...conversation.messages].reverse().find(
+    (message) =>
+      message.messageType === 'agent_response' &&
+      Boolean(message.deepResearchJobId) &&
+      !message.deepResearchReportExpired &&
+      (message.showViewReport || Boolean(message.reportContent?.trim()))
+  )
+  return reportMessage?.deepResearchJobId
+}
 
 /**
  * One silent replay is enough to cover the stale-open socket race observed in
@@ -364,6 +423,7 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
   const addThinkingStep = useChatStore((s) => s.addThinkingStep)
   const appendToThinkingStep = useChatStore((s) => s.appendToThinkingStep)
   const completeThinkingStep = useChatStore((s) => s.completeThinkingStep)
+  const failThinkingStep = useChatStore((s) => s.failThinkingStep)
   const updateThinkingStepByFunctionName = useChatStore((s) => s.updateThinkingStepByFunctionName)
   const findThinkingStepByFunctionName = useChatStore((s) => s.findThinkingStepByFunctionName)
   const addAgentPrompt = useChatStore((s) => s.addAgentPrompt)
@@ -537,13 +597,30 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
       const client = wsClientRef.current
       if (!client?.isConnected()) return false
 
-      const outboundId = payload.kind === 'message'
-        ? client.sendMessage(payload.content, payload.dataSources)
-        : client.sendInteractionResponse(
+      let outboundId: string | null
+      if (payload.kind === 'message') {
+        // Preserve the existing call shapes (2 args, or 3 with activeReportJobId);
+        // only widen to the 4-arg form when a model was explicitly selected so the
+        // backend receives it (it may ignore the field).
+        if (payload.selectedModel) {
+          outboundId = client.sendMessage(
+            payload.content,
+            payload.dataSources,
+            payload.activeReportJobId,
+            payload.selectedModel
+          )
+        } else if (payload.activeReportJobId) {
+          outboundId = client.sendMessage(payload.content, payload.dataSources, payload.activeReportJobId)
+        } else {
+          outboundId = client.sendMessage(payload.content, payload.dataSources)
+        }
+      } else {
+        outboundId = client.sendInteractionResponse(
           payload.interactionId,
           payload.parentId,
           payload.response,
         )
+      }
 
       if (!outboundId) return false
       trackSentOutgoing(payload, outboundId)
@@ -593,22 +670,27 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
         }
         acknowledgeOutgoingDelivery(parentId)
 
-        // Check for deep research escalation signal
-        // Backend sends: "Deep research job submitted. Job ID: {uuid}"
-        const deepResearchMatch = content?.match(
-          /Deep research job submitted\. Job ID: ([a-f0-9-]+)/i
-        )
+        // Check for an async-job escalation signal. Two backend paths produce a
+        // pollable child job whose report is fetched over the same SSE/report
+        // endpoints, so both escalate the same way. The backend emits a structured
+        // JSON payload (see _job_escalation_message in chat_researcher/agent.py)
+        // rather than a prose sentence, so detection is robust to wording/punctuation:
+        //   {"type":"job_escalation","kind":"deep_research"|"report_edit","job_id":"<id>"}
+        const escalation = parseJobEscalation(content)
 
-        if (deepResearchMatch) {
-          const jobId = deepResearchMatch[1]
+        if (escalation) {
+          const isReportEdit = escalation.kind === 'report_edit'
+          const jobId = escalation.jobId
           // Get current state for plan messages and conversation
           const state = useChatStore.getState()
           const currentPlanMessages = state.planMessages
           const currentConversation = state.currentConversation
 
           // Derive a conversation title from the plan (preferred) or fall
-          // back to the last user message.
-          if (currentConversation) {
+          // back to the last user message. Report edits run inside an existing
+          // report conversation, so they must NOT rename it to the edit
+          // instruction -- only new deep-research runs derive a title.
+          if (currentConversation && !isReportEdit) {
             let extractedTitle: string | null = null
 
             // First, look at all plan messages for a title
@@ -766,7 +848,10 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
         const workflowLabel = getWorkflowDisplayName(functionName)
         const displayName = workflowLabel || getDisplayName(functionName)
         const isTopLevel = isFunctionStepName(content.name)
-        const formattedPayload = formatPayload(content.payload || '')
+        const formattedPayload = deriveStepContent(content.payload)
+        const stepStatus: ThinkingStep['status'] =
+          status === 'error' ? 'error' : status === 'complete' ? 'success' : 'running'
+        const argSummary = deriveArgSummary(functionName, content.payload || '')
 
         // Check if we already have a step for this function
         const existingStep = findThinkingStepByFunctionName(functionName)
@@ -774,6 +859,8 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
         if (isComplete && existingStep) {
           // Update existing step with complete status and final content
           updateThinkingStepByFunctionName(functionName, formattedPayload, true)
+          if (stepStatus === 'error') failThinkingStep(existingStep.id)
+          else completeThinkingStep(existingStep.id)
         } else if (existingStep) {
           // Defensive: shouldn't usually fire (a step is normally either new
           // or transitioning to complete), but handle gracefully.
@@ -788,6 +875,8 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
             rawPayload: content.payload,
             isComplete,
             isTopLevel,
+            status: stepStatus,
+            argSummary,
           })
           currentThinkingStepIdRef.current = stepId
           currentStatusRef.current = 'thinking'
@@ -1013,6 +1102,7 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
     addThinkingStep,
     appendToThinkingStep,
     completeThinkingStep,
+    failThinkingStep,
     updateThinkingStepByFunctionName,
     findThinkingStepByFunctionName,
     addAgentPrompt,
@@ -1134,6 +1224,7 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
       addUserMessage(content, {
         enabledDataSources: dataSourcesForMessage,
         messageFiles,
+        selectedModel: layoutState.selectedModel,
       })
 
       // currentConversation may have just been created inside addUserMessage.
@@ -1158,6 +1249,8 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
         kind: 'message',
         content,
         dataSources: dataSourcesForMessage,
+        activeReportJobId: getActiveReportJobId(storeState.currentConversation),
+        selectedModel: layoutState.selectedModel,
       }
 
       // Helper to actually send the message

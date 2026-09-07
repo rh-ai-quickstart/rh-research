@@ -22,7 +22,39 @@ NVIDIA_API_KEY=nvapi-...
 TAVILY_API_KEY=tvly-...
 # Or, to use Exa instead of Tavily for web search:
 # EXA_API_KEY=...
+# Or, to use Nimble instead of Tavily for web search:
+# NIMBLE_API_KEY=...
 ```
+
+### Using vLLM, Red Hat MaaS, or another OpenAI-compatible endpoint
+
+The defaults target NVIDIA NIM via the NVIDIA API Catalog. To run against a local vLLM server, a Red Hat MaaS endpoint, or any other OpenAI-compatible backend, set the `VLLM_*` block in `deploy/.env` instead and launch with the vLLM config:
+
+```bash
+VLLM_BASE_URL=http://localhost:8000          # or your MaaS base URL
+VLLM_API_KEY=no-key                          # or a bearer token for MaaS
+VLLM_INTENT_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_RESEARCHER_MODEL=meta-llama/Llama-3.1-70B-Instruct
+VLLM_ORCHESTRATOR_MODEL=Qwen/Qwen2.5-72B-Instruct
+VLLM_SUMMARY_MODEL=meta-llama/Llama-3.1-8B-Instruct
+```
+
+Then launch with `configs/config_web_vllm.yml`:
+
+```bash
+# Web UI (backend + frontend)
+./scripts/start_e2e.sh --config_file configs/config_web_vllm.yml
+
+# CLI
+./scripts/start_cli.sh --config_file configs/config_web_vllm.yml
+
+# Raw NAT (no helper script)
+CONFIG_FILE=configs/config_web_vllm.yml nat serve
+```
+
+The helper scripts accept the config only via `--config_file`; the `CONFIG_FILE=...` env-var form is honored by `nat serve` directly. When `VLLM_BASE_URL` is set, `NVIDIA_API_KEY` is not required.
+
+See [Migrating to vLLM](../customization/vllm-migration.md) for a full walkthrough and [MaaS Recipe: Kimi K2.5](../customization/maas-kimi-k25.md) for the Red Hat MaaS configuration used in this project.
 
 ## Step 2: Choose a Mode
 
@@ -68,7 +100,7 @@ The web UI requires Node.js 22+ and npm. If these were available during `./scrip
 ```
 
 ```{tip}
-**Running on a remote VM?** If you access the VM via SSH, you need to forward ports 3000 and 8000 to your local machine: `ssh -L 3000:localhost:3000 -L 8000:localhost:8000 user@your-vm-host`. See [Troubleshooting — VM / Remote Development](../resources/troubleshooting.md#vm--remote-development) for details.
+**Running on a remote VM?** If you access the VM via SSH, you need to forward ports 3000 and 8000 to your local machine: `ssh -L 3000:localhost:3000 -L 8000:localhost:8000 user@your-vm-host`. Refer to [Troubleshooting — VM / Remote Development](../resources/troubleshooting.md#vm--remote-development) for details.
 ```
 
 ## Step 3: Ask a Question
@@ -89,8 +121,8 @@ Try one of these example queries to observe the system in action:
 
 ### What to Expect
 
-- **Shallow queries** produce a concise answer with inline citations and source links within a few seconds.
-- **Deep queries** trigger a multi-phase research process (planning, research, synthesis) that produces a structured report with a table of contents, inline citations, and a references section. This takes longer (typically 1--3 minutes depending on complexity).
+- **Shallow queries** typically produce a concise answer with inline citations and source links in under a minute.
+- **Deep queries** trigger a multi-phase research process (planning, research, synthesis) that produces a structured report with a table of contents, inline citations, and a references section. This commonly takes several minutes and can exceed ten minutes depending on the query, models, providers, and data sources.
 
 The system automatically routes queries to the appropriate depth based on complexity. You do not need to specify shallow vs. deep -- the orchestration node decides for you.
 
@@ -137,6 +169,8 @@ To view detailed agent execution logs (tool calls, routing decisions, LLM intera
 
 Now that you have the system running, explore these topics:
 
+- **[Review recent changes](../resources/changelog.md)** -- See what has changed and choose among the focused [configuration profiles](../customization/configuration-reference.md#provided-config-files)
+- **[Agent Skills](../integration/agent-skills.md)** -- Deploy and call AI-Q from a compatible coding harness
 - **[Architecture Overview](../architecture/overview.md)** -- Understand how the orchestrator, shallow researcher, and deep researcher work together
 - **[Customization](../customization/index.md)** -- Swap models, configure tools, adjust prompts, and tune agent behavior
 - **[Deployment](../deployment/index.md)** -- Run with Docker Compose

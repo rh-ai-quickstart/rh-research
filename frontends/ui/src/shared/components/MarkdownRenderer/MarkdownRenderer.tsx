@@ -4,11 +4,29 @@
 'use client'
 
 import { type FC, type ReactNode, memo, useMemo } from 'react'
-import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown'
+import ReactMarkdown, { type Components, type ExtraProps, defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 import { Text, CodeSnippet, Anchor } from '@/adapters/ui'
+import { cn } from '@/shared/lib/cn'
 import type { MarkdownRendererProps } from './types'
 import { getLanguageFromClassName } from './utils'
+import { rehypeCitations } from './rehype-citations'
+import { Citation } from './Citation'
+import { MermaidBlock } from '@/shared/components/Mermaid'
+import { ARTIFACT_SCHEME, isArtifactRef, resolveArtifactUrl } from '@/shared/utils/artifact-url'
+import { ChartBlock, fenceBareSpecs } from '@/shared/components/ResultChart'
+
+// Fenced languages the agent uses for declarative result charts, routed to ChartBlock.
+const CHART_LANGUAGES = new Set(['chart', 'chart-carousel'])
+
+// react-markdown's default sanitizer strips non-standard URL schemes, which would blank the
+// src of `artifact://<id>` images before the `img` renderer can resolve them. Preserve that
+// scheme and defer to the default transform for everything else (keeps XSS protection).
+const urlTransform = (url: string): string =>
+  url.startsWith(ARTIFACT_SCHEME) ? url : defaultUrlTransform(url)
 
 function getTextFromChildren(node: ReactNode): string {
   if (typeof node === 'string') return node
@@ -36,34 +54,55 @@ function slugify(text: string): string {
  * @param isStreaming - Whether content is still streaming (disables memoization)
  * @param className - Additional CSS classes
  * @param compact - Use smaller text sizes for chat bubbles
+ * @param artifactJobId - Job id used to resolve `artifact://` image refs
+ * @param variant - `answer` applies the answer-prose scale and citation chips
+ * @param sources - Cited sources used to resolve inline `[n]` citation chips
  */
 export const MarkdownRenderer: FC<MarkdownRendererProps> = memo(
-  ({ content, className = '', compact = false }) => {
-    // Custom component mappings
+  ({ content, className = '', compact = false, artifactJobId, variant = 'default', sources }) => {
+    // Wrap any bare chart-spec line the agent forgot to fence so it still renders.
+    const prepared = useMemo(() => fenceBareSpecs(content), [content])
+    const isAnswer = variant === 'answer'
+    const hasCitations = isAnswer && Array.isArray(sources) && sources.length > 0
     const components: Components = useMemo(
       () => ({
+        cite: ({ children }) => (
+          <Citation n={parseInt(getTextFromChildren(children) || '0', 10)} sources={sources ?? []} />
+        ),
         code: ({
           children,
           className: codeClassName,
+          node: _node,
           ...props
         }: React.ComponentPropsWithoutRef<'code'> & ExtraProps) => {
-          // Check if this is a block code (has language class) vs inline
+          // Block code (has a language class) vs inline
           const isBlock = codeClassName?.startsWith('language-')
           const codeContent = String(children).replace(/\n$/, '')
 
           if (isBlock) {
-            const language = getLanguageFromClassName(codeClassName)
             const lineCount = codeContent.split('\n').length
-
-            return (
+            const fallback = (
               <CodeSnippet
                 value={codeContent}
-                language={language}
+                language={getLanguageFromClassName(codeClassName)}
                 kind="block"
                 collapsible={lineCount > 15}
                 rows={15}
               />
             )
+
+            const rawLang = codeClassName?.replace(/^language-/, '') ?? ''
+            if (CHART_LANGUAGES.has(rawLang)) {
+              return <ChartBlock raw={codeContent} fallback={fallback} />
+            }
+
+            // A fenced ```mermaid block renders as an interactive diagram; every
+            // other fence (including ```chart) falls through to the code block.
+            if (/language-mermaid\b/.test(codeClassName ?? '')) {
+              return <MermaidBlock code={codeContent} fallback={fallback} />
+            }
+
+            return fallback
           }
 
           // Inline code
@@ -80,7 +119,7 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = memo(
         // Skip default pre rendering since CodeSnippet handles it
         pre: ({ children }) => <>{children}</>,
 
-        // Headings — include id for in-page anchor navigation
+        // Headings: include id for in-page anchor navigation
         h1: ({ children }) => {
           const id = slugify(getTextFromChildren(children))
           return (
@@ -115,30 +154,38 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = memo(
         },
 
         // Paragraphs
-        p: ({ children }) => (
-          <Text
-            asChild
-            kind={compact ? 'body/regular/sm' : 'body/regular/md'}
-            className="text-primary mb-3 block leading-relaxed"
-          >
-            <p>{children}</p>
-          </Text>
-        ),
+        p: ({ children }) =>
+          isAnswer ? (
+            <p className="text-primary mb-3 leading-relaxed">{children}</p>
+          ) : (
+            <Text
+              asChild
+              kind={compact ? 'body/regular/sm' : 'body/regular/md'}
+              className="text-primary mb-3 block leading-relaxed"
+            >
+              <p>{children}</p>
+            </Text>
+          ),
 
         // Lists
         ul: ({ children }) => (
           <ul className="text-primary mb-3 list-outside list-disc space-y-1 pl-5">{children}</ul>
         ),
-        ol: ({ children }) => (
-          <ol className="text-primary mb-3 list-outside list-decimal space-y-1 pl-5">{children}</ol>
+        ol: ({ children, start }) => (
+          <ol start={start} className="text-primary mb-3 list-outside list-decimal space-y-1 pl-5">
+            {children}
+          </ol>
         ),
-        li: ({ children }) => (
-          <Text asChild kind={compact ? 'body/regular/sm' : 'body/regular/md'}>
+        li: ({ children }) =>
+          isAnswer ? (
             <li className="text-primary">{children}</li>
-          </Text>
-        ),
+          ) : (
+            <Text asChild kind={compact ? 'body/regular/sm' : 'body/regular/md'}>
+              <li className="text-primary">{children}</li>
+            </Text>
+          ),
 
-        // Links — anchor hrefs scroll in-page; external hrefs open new tabs
+        // Links: anchor hrefs scroll in-page; external hrefs open new tabs
         a: ({ href, children }) => {
           if (href?.startsWith('#')) {
             return (
@@ -159,6 +206,36 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = memo(
             <Anchor href={href ?? '#'} target="_blank" rel="noopener noreferrer" kind="inline">
               {children}
             </Anchor>
+          )
+        },
+
+        // Images: resolve durable artifact:// refs to the content endpoint and render
+        // as a captioned figure; pass other images through with responsive styling.
+        img: ({ src, alt }) => {
+          const rawSrc = typeof src === 'string' ? src : ''
+          const resolved = isArtifactRef(rawSrc)
+            ? resolveArtifactUrl(rawSrc, artifactJobId)
+            : rawSrc
+          // An unresolved artifact ref (no job id) would be a broken image, so skip it.
+          if (!resolved || isArtifactRef(resolved)) return null
+          const caption = alt ?? ''
+          return (
+            // react-markdown renders images inside a <p>, so use phrasing-content spans
+            // (not <figure>/<figcaption>, which are invalid inside <p>).
+            <span className="my-4 flex flex-col items-center">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={resolved}
+                alt={caption}
+                loading="lazy"
+                className="border-base max-w-full rounded-md border"
+              />
+              {caption && (
+                <Text asChild kind="body/regular/sm" className="text-subtle mt-2 block text-center">
+                  <span>{caption}</span>
+                </Text>
+              )}
+            </span>
           )
         },
 
@@ -198,13 +275,24 @@ export const MarkdownRenderer: FC<MarkdownRendererProps> = memo(
           </Text>
         ),
       }),
-      [compact]
+      [compact, isAnswer, sources, artifactJobId]
     )
 
     return (
-      <div className={`markdown-content break-words [overflow-wrap:anywhere] [&>*:last-child]:mb-0 ${className}`}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-          {content}
+      <div
+        className={cn(
+          'markdown-content [overflow-wrap:anywhere] break-words [&>*:last-child]:mb-0',
+          isAnswer && 'answer-prose',
+          className,
+        )}
+      >
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
+          rehypePlugins={hasCitations ? [rehypeCitations, rehypeKatex] : [rehypeKatex]}
+          components={components}
+          urlTransform={urlTransform}
+        >
+          {prepared}
         </ReactMarkdown>
       </div>
     )

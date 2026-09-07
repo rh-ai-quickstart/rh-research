@@ -1,6 +1,57 @@
 # Change Log
 
-Release v2.1.0 (Unreleased — target 2026-05-19)
+Release v2.2.0 (2026-08-17)
+
+Published NVIDIA NGC artifacts:
+
+- Backend container: [`nvcr.io/nvidia/blueprint/aiq-agent:2.2.0`](https://catalog.ngc.nvidia.com/orgs/nvidia/blueprint/containers/aiq-agent/2.2.0)
+- Frontend container: [`nvcr.io/nvidia/blueprint/aiq-frontend:2.2.0`](https://catalog.ngc.nvidia.com/orgs/nvidia/blueprint/containers/aiq-frontend/2.2.0)
+- Helm chart: [`nvidia/blueprint/aiq2-web:2.2.0`](https://catalog.ngc.nvidia.com/orgs/nvidia/blueprint/helm-charts/aiq2-web/2.2.0)
+
+**Research and reports**
+
+- Routed deep research now uses explicit source-router, structured planner, concurrent researcher, and writer roles, with bounded source-tool batching and no research-plan approval step
+- Report follow-up supports answers over a completed report, child-job cosmetic rewrites, and delta research that carries the parent report forward as context
+- Clarification is more targeted: it can search for context before asking the user to narrow scope or choose an output shape
+- The writer produces figures through an on-demand `chart-generation` skill in the new `visualization` skill collection, rendering a sandbox PNG artifact when a sandbox is available and an inline chart spec otherwise; the skill ships enabled only in the skills and sandbox example configs (`config_domain_routing_and_skills`, `config_openshell`), while every other config presents chart-worthy data as a Markdown table, and a writer that wants inline charts must be assigned the `visualization` collection (charts are not sandbox-gated)
+
+**Sources and integrations**
+
+- OpenSearch is a first-class knowledge backend for self-hosted, Amazon OpenSearch Service, and Amazon OpenSearch Serverless deployments
+- Azure AI Search is a managed knowledge backend with API-key or Azure identity authentication, namespaced index ownership, and hybrid retrieval
+- Paper search adds SerpAPI and SearchAPI providers alongside Serper; the routed-research profile adds DuckDuckGo news and Polymarket sources
+- You.com adds configurable web search, page-content extraction, cited open-domain research, and finance-focused research tools
+- Nimble adds configurable web search with lite and deep modes, plus an Enterprise-only fast mode and optional focus, country, and locale controls
+- Per-user MCP OAuth adds status, connect, callback, and reconnect flows backed by a token store shared by the API and workers; disconnect and in-worker token refresh are not included
+- A standalone public MCP server exposes stateless submit, poll, and final-report tools over Streamable HTTP with PostgreSQL-backed job state
+
+**Sandboxes, artifacts, and policy**
+
+- DeepAgents execution uses a provider-neutral, job-scoped sandbox contract: Modal and OpenShell create one physical sandbox per deep-research job; OpenShell additionally applies and attests the configured policy before execution
+- Opt-in durable artifact capture checkpoints manifest-declared files after successful sandbox `execute` calls, performs one final manifest-plus-directory scan on success/failure, and preserves earlier checkpoints without delaying cancellation when the provider is busy
+- Captured files store metadata in SQL and bytes in SQL or S3-compatible storage, emit metadata-only `artifact.update` events for live and replayed Files-tab access, and remain available through job-scoped list/content endpoints that enforce ownership when `REQUIRE_AUTH=true`
+- Opt-in NeMo Guardrails middleware covers selected workflow and agent input/output boundaries; defining middleware does not activate every boundary
+- Opt-in content encryption protects final async output and selected artifact event content only; it is off by default, forward-only, and does not encrypt checkpoints or most job/event metadata
+- Summary Store database logging masks URL passwords and removes query parameters so credentials and query-string secrets are not written to initialization or lifecycle logs
+
+**Deployment and observability**
+
+- The repository source Helm chart honors `helm install -n <namespace>` for every namespaced resource, including GitOps-rendered deployments; chart metadata advances to `aiq2-web` 2.2.0 with the `aiq` 0.0.5 dependency
+- NAT-exported async-job traces preserve configured workflow, task/batch, named-agent, and model/tool hierarchy across concurrent researchers without copying graph-state content into structural agent spans
+- Deep-research intake uses atomic per-principal, deployment-wide, and per-minute admission controls before Dask enqueue; each job also enforces hard input, runtime, plan, report, shared-state, query, note, todo, and source-tool budgets
+- Document ingestion enforces server-side file-count, per-file, aggregate-size, declared-type, and content validation using the same upload settings as the UI
+- The embedded Dask scheduler, dashboard, and worker listeners bind to loopback; production guidance defines the customer-operated security boundaries for external Dask, provider quotas, authentication, and S3-compatible artifact storage
+
+**Agent Skills, UX, and developer workflow**
+
+- Consumer Agent Skills now include `aiq-deploy` and `aiq-research`; maintainer skills cover workflow configuration, data sources, tools, release QA, PR preparation, prompt/model customization, and CI maintenance
+- The UI surfaces batched researcher activity and improves research-session recovery, expiry handling, and WebSocket delivery reliability
+- Contributor governance and product-level Agent Skill evaluation checks expand release and contribution tooling
+- Pinned to NeMo Agent Toolkit (NAT) v1.8.0
+
+The eleven checked-in workflow configurations are focused profiles; no single profile enables every 2.2 capability.
+
+Release v2.1.0
 
 - AI-Q REST API with pluggable auth middleware, entry-point-registered token validators, and async job ownership enforcement
 - Auth extensibility hooks (`register_token_fetcher`, provider lifecycle) and auth refactor eliminating the refresh race
@@ -14,6 +65,24 @@ Release v2.1.0 (Unreleased — target 2026-05-19)
 - Operability: idempotent DB init, tuned Dask/Postgres defaults, request tracing into NAT spans, UI stream-failure hardening
 - New authentication and MCP tools guides; new skills-and-sandbox example
 - Pinned to NeMo Agent Toolkit (NAT) v1.6.0; CVE bumps for Pillow, cryptography, pygments, authlib, pyopenssl, and pytest
+
+Migration (2026-04-20)
+
+- Project home moved to [`rh-ai-quickstart/rh-research`](https://github.com/rh-ai-quickstart/rh-research); see `MIGRATION.md` for history layout, upstream tracking, and attribution
+- Red Hat work lives on the `red-hat-v2.1.0` branch of `rh-research` (tagged `v2.1.0-redhat`); the repo's `develop` branch tracks NVIDIA upstream while the 23-commit upstream-merge effort is tracked separately
+- Repo URL references (README, installation guide, Sphinx config, getting-started and deep-researcher notebooks) retargeted to the new canonical home including the `red-hat-v2.1.0` branch hint on clone instructions; NVIDIA upstream attribution preserved in `Fork Customizations` and "See also" sections
+
+Release v2.1.0-redhat
+
+- Red Hat frontend rebrand: logo (fedora SVG), colors (#76b900 to #EE0000 palette), fonts (Red Hat Display/Text via Google Fonts), app name (AI-Q to Red Hat Research), favicon
+- Remapped KUI design system green and blue palette tokens to Red Hat red via CSS custom property overrides in globals.css
+- New `configs/config_web_vllm.yml`: drop-in config using `_type: openai` for vLLM or any OpenAI-compatible endpoint, with env var overrides for model names and base URL
+- Config validation (`config_validation.py`): skip API key requirement for local/private endpoints (localhost, 10.x, 192.168.x, 172.x)
+- Model-aware thinking prefixes (`get_thinking_prefix()` in `prompt_utils.py`): Nemotron models get `/no_think` or `/think` directives; all other models get clean prompts
+- Removed hardcoded `/no_think` from `plan_generation.j2` template and fallback prompts in `intent_classifier.py` and `clarifier/agent.py`; replaced with runtime model detection
+- WebSocket connection timeout fix: 10-second timeout for stuck CONNECTING state prevents indefinite "Please Wait" hang
+- SSE request body fix: `input_message` to `query` to match backend schema
+- vLLM migration guide, frontend rebranding guide, and blog post documenting the approach
 
 Release v2.0.0
 

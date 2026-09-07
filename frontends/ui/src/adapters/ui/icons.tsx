@@ -33,7 +33,7 @@
 
 import { type FC, useState, useEffect } from 'react'
 
-/** CDN base URL for NVIDIA brand asset icons (pinned version) */
+/** CDN base URL for UI icons (pinned version) */
 const CDN_VERSION = '3.8.0'
 const CDN_BASE = `https://brand-assets.cne.ngc.nvidia.com/assets/icons/${CDN_VERSION}`
 
@@ -215,7 +215,7 @@ export const Generate: FC<IconProps> = ({ className }) => {
       data-src={`${CDN_BASE}/line/generate.svg`}
       width="24"
       height="24"
-      fill="#76B900"
+      fill="#EE0000"
       className={`nv-icon-green ${className ?? ''}`}
       aria-hidden="true"
     />

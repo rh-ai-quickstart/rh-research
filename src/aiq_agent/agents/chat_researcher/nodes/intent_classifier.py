@@ -30,11 +30,15 @@ from langchain_core.messages import SystemMessage
 from aiq_agent.common import extract_json
 from aiq_agent.common import load_prompt
 from aiq_agent.common import render_prompt_template
+from aiq_agent.common.logging_utils import log_content_metadata
+from aiq_agent.relay import ainvoke_with_relay
 
+from ..models import RESEARCH_WORKFLOW_FAILURE_ERROR
 from ..models import ChatResearcherState
 from ..models import DepthDecision
 from ..models import IntentResult
-from ..utils import trim_message_history
+from ..models import WorkflowFailure
+from ..preclassification import get_preclassified_depth
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,22 @@ _LLM_UNAVAILABLE_MESSAGE = (
     "Please check your LLM API key and that the configured model is available for your account."
 )
 _LLM_TIMEOUT_MESSAGE = "The model service took too long to respond and the request timed out. "
+_LLM_ERROR_MESSAGE = "We couldn't process your request due to a temporary error. Please try again."
+_REPAIR_TIMEOUT_SECONDS = 15
+_ROUTE_REPORT_ASK = "report_ask"
+_ROUTE_REPORT_COSMETIC_EDIT = "report_cosmetic_edit"
+_ROUTE_REPORT_DELTA_RESEARCH = "report_delta_research"
+_ROUTE_STANDALONE_RESEARCH = "standalone_research"
+_ROUTE_META = "meta"
+
+
+def _failure_update(message: str) -> dict[str, Any]:
+    """Return the existing terminal meta route with an explicit failed outcome."""
+    return {
+        "user_intent": IntentResult(intent="meta", target="meta", raw=None),
+        "messages": [AIMessage(content=message)],
+        "workflow_outcome": WorkflowFailure(error=RESEARCH_WORKFLOW_FAILURE_ERROR),
+    }
 
 
 def _is_llm_api_unavailable(err: BaseException) -> bool:
@@ -86,10 +106,9 @@ class IntentClassifier:
             return load_prompt(Path(__file__).parent.parent / "prompts", "intent_classification.j2")
         except Exception:
             return (
-                "/no_think\n\n"
                 "You are an Orchestrator. Classify intent as 'meta' or 'research'.\n"
                 "If meta, provide 'meta_response'. If research, provide 'research_depth'.\n"
-                "Respond ONLY with JSON."
+                "Respond concisely with only valid JSON, no explanation."
             )
 
     async def run(self, state: ChatResearcherState) -> dict[str, Any]:
@@ -99,6 +118,18 @@ class IntentClassifier:
             return {
                 "user_intent": IntentResult(intent="research", raw=None),
                 "depth_decision": DepthDecision(decision="deep", raw_reasoning="No query"),
+            }
+
+        # Reuse a caller-supplied depth when present (e.g. the MCP JobManager, which
+        # already classified this query once to persist depth and pick a poll cadence).
+        # This keeps the persisted decision and the executed route identical and skips a
+        # redundant intent-LLM call. Only research depth is threaded; meta short-circuits
+        # before the caller ever reaches this path, so target defaults to "new_research".
+        preset_depth = get_preclassified_depth()
+        if preset_depth is not None:
+            return {
+                "user_intent": IntentResult(intent="research", raw=None),
+                "depth_decision": DepthDecision(decision=preset_depth, raw_reasoning="preclassified by caller"),
             }
 
         user_info = state.user_info or {}
@@ -112,34 +143,69 @@ class IntentClassifier:
             current_datetime=current_datetime,
             user_info=user_info,
             tools=self.tools_info,
+            active_report_available=bool(state.active_report_job_id or state.last_report_markdown),
         )
-        trimmed_conversation = trim_message_history(list(state.messages), max_tokens=self.max_history)
-        messages: list[BaseMessage] = [SystemMessage(content=system_content)] + trimmed_conversation
+        # Keep the router isolated from prior assistant report bodies. The prompt already contains
+        # the latest query and report availability, which is the bounded context needed here.
+        messages: list[BaseMessage] = [SystemMessage(content=system_content)]
 
         try:
-            config = {"callbacks": self.callbacks} if self.callbacks else {}
+            # This model call crosses the NAT function boundary, so it does not
+            # inherit the parent graph's RunnableConfig automatically.
             response = await asyncio.wait_for(
-                self.llm.ainvoke(messages, config=config),
+                ainvoke_with_relay(self.llm, messages, callbacks=self.callbacks),
                 timeout=self.llm_timeout,
             )
 
             response_text = (response.content or "").strip()
             parsed = extract_json(response_text)
+            if not parsed or not isinstance(parsed, dict):
+                parsed = await self._repair_json_response(
+                    system_content=system_content,
+                    invalid_response=response_text,
+                    callbacks=self.callbacks,
+                )
 
             if not parsed or not isinstance(parsed, dict):
-                return {
-                    "user_intent": IntentResult(intent="research", raw=None),
-                    "depth_decision": DepthDecision(decision="shallow", raw_reasoning="Parse failed"),
-                }
+                return _failure_update(_LLM_ERROR_MESSAGE)
 
             raw_intent = (parsed.get("intent") or "research").strip().lower()
-            intent = raw_intent if raw_intent in ("meta", "research") else "research"
+            route = _normalize_route(parsed.get("route"))
+            if route == _ROUTE_META:
+                intent = "meta"
+            elif route is not None:
+                intent = "research"
+            else:
+                intent = raw_intent if raw_intent in ("meta", "research") else "research"
             meta_response = parsed.get("meta_response")
             research_depth = (parsed.get("research_depth") or "shallow").strip().lower()
-            depth_reasoning = parsed.get("depth_reasoning") or ""
+            depth_reasoning = parsed.get("route_reasoning") or parsed.get("depth_reasoning") or ""
+            active_report = bool(state.active_report_job_id or state.last_report_markdown)
+
+            if intent == "meta":
+                target = "meta"
+                report_action = None
+                use_parent_report_context = False
+            elif route is not None:
+                target, report_action, use_parent_report_context, research_depth, depth_reasoning = _route_to_fields(
+                    route=route,
+                    active_report=active_report,
+                    research_depth=research_depth,
+                    depth_reasoning=str(depth_reasoning),
+                )
+            else:
+                target = "new_research"
+                report_action = None
+                use_parent_report_context = False
 
             update: dict[str, Any] = {
-                "user_intent": IntentResult(intent=intent, raw=parsed),
+                "user_intent": IntentResult(
+                    intent=intent,
+                    target=target,
+                    report_action=report_action,
+                    use_parent_report_context=use_parent_report_context,
+                    raw=parsed,
+                ),
             }
 
             if intent == "meta":
@@ -147,7 +213,7 @@ class IntentClassifier:
                     meta_response if isinstance(meta_response, str) and meta_response.strip() else "I'm here to help."
                 )
                 update["messages"] = [AIMessage(content=meta_text)]
-            else:
+            elif target != "report":
                 update["depth_decision"] = DepthDecision(
                     decision=research_depth if research_depth in ("shallow", "deep") else "shallow",
                     raw_reasoning=str(depth_reasoning),
@@ -160,29 +226,103 @@ class IntentClassifier:
                 "LLM call timed out after %s seconds.",
                 self.llm_timeout,
             )
-            return {
-                "user_intent": IntentResult(intent="meta", raw=None),
-                "messages": [AIMessage(content=_LLM_TIMEOUT_MESSAGE)],
-            }
+            return _failure_update(_LLM_TIMEOUT_MESSAGE)
         except Exception as e:
             if _is_llm_api_unavailable(e):
-                logger.exception(
-                    "LLM API unreachable (e.g. 404 model/function not found): %s.",
-                    str(e).split("\n")[0],
+                logger.error(
+                    "LLM API unreachable (e.g. 404 model/function not found) (error_type=%s detail_%s)",
+                    type(e).__name__,
+                    log_content_metadata(e),
                 )
-                return {
-                    "user_intent": IntentResult(intent="meta", raw=None),
-                    "messages": [AIMessage(content=_LLM_UNAVAILABLE_MESSAGE)],
-                }
+                return _failure_update(_LLM_UNAVAILABLE_MESSAGE)
             if _is_timeout_error(e):
-                logger.exception("LLM call failed with timeout (e.g. 504 Gateway Time-out): %s", e)
-                return {
-                    "user_intent": IntentResult(intent="meta", raw=None),
-                    "messages": [AIMessage(content=_LLM_TIMEOUT_MESSAGE)],
-                }
-            logger.exception("Error in orchestration: %s", e)
-            err_msg = "We couldn't process your request due to a temporary error. Please try again."
-            return {
-                "user_intent": IntentResult(intent="meta", raw=None),
-                "messages": [AIMessage(content=err_msg)],
-            }
+                logger.error(
+                    "LLM call failed with timeout (e.g. 504 Gateway Time-out) (error_type=%s detail_%s)",
+                    type(e).__name__,
+                    log_content_metadata(e),
+                )
+                return _failure_update(_LLM_TIMEOUT_MESSAGE)
+            logger.error(
+                "Error in orchestration (error_type=%s detail_%s)",
+                type(e).__name__,
+                log_content_metadata(e),
+            )
+            return _failure_update(_LLM_ERROR_MESSAGE)
+
+    async def _repair_json_response(
+        self,
+        *,
+        system_content: str,
+        invalid_response: str,
+        callbacks: list[Any],
+    ) -> dict[str, Any] | None:
+        repair_prompt = (
+            f"{system_content}\n\n"
+            "The previous classifier response was invalid because it was not one valid JSON object.\n"
+            "Return only one valid JSON object matching the schema above. Do not include markdown, prose, "
+            "analysis, code fences, or a rewritten report.\n\n"
+            f"Invalid response:\n{invalid_response[:4000]}"
+        )
+        try:
+            response = await asyncio.wait_for(
+                ainvoke_with_relay(
+                    self.llm,
+                    [SystemMessage(content=repair_prompt)],
+                    callbacks=callbacks,
+                ),
+                timeout=min(self.llm_timeout, _REPAIR_TIMEOUT_SECONDS),
+            )
+        except TimeoutError:
+            logger.warning("Intent classifier JSON repair timed out.")
+            return None
+        except Exception as e:
+            logger.warning(
+                "Intent classifier JSON repair failed (error_type=%s detail_%s)",
+                type(e).__name__,
+                log_content_metadata(e),
+            )
+            return None
+
+        repaired = extract_json((response.content or "").strip())
+        return repaired if isinstance(repaired, dict) else None
+
+
+def _normalize_route(raw_route: Any) -> str | None:
+    route = raw_route.strip().lower() if isinstance(raw_route, str) else None
+    if route in (
+        _ROUTE_REPORT_ASK,
+        _ROUTE_REPORT_COSMETIC_EDIT,
+        _ROUTE_REPORT_DELTA_RESEARCH,
+        _ROUTE_STANDALONE_RESEARCH,
+        _ROUTE_META,
+    ):
+        return route
+    return None
+
+
+def _route_to_fields(
+    *,
+    route: str,
+    active_report: bool,
+    research_depth: str,
+    depth_reasoning: str,
+) -> tuple[str, str | None, bool, str, str]:
+    """Map the LLM-owned semantic route onto the existing workflow fields."""
+    if route == _ROUTE_REPORT_ASK:
+        if active_report:
+            return "report", "ask", False, research_depth, depth_reasoning
+        return "new_research", None, False, research_depth, depth_reasoning
+
+    if route == _ROUTE_REPORT_COSMETIC_EDIT:
+        if active_report:
+            return "report", "edit", False, research_depth, depth_reasoning
+        return "new_research", None, False, research_depth, depth_reasoning
+
+    if route == _ROUTE_REPORT_DELTA_RESEARCH:
+        reasoning = depth_reasoning or "Requires fresh evidence against the active report."
+        return "new_research", None, active_report, "deep", reasoning
+
+    if route == _ROUTE_STANDALONE_RESEARCH:
+        return "new_research", None, False, research_depth, depth_reasoning
+
+    raise ValueError(f"Unsupported research route: {route}")

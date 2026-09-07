@@ -30,6 +30,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import UTC
 from datetime import datetime
 from enum import StrEnum
@@ -41,6 +42,8 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from aiq_agent.common.callbacks import SUPPRESS_OUTPUT_ARTIFACT_TAG
+from aiq_agent.common.citation_verification import extract_http_urls
 from aiq_agent.common.citation_verification import get_session_registry
 
 if TYPE_CHECKING:
@@ -126,6 +129,22 @@ class IntermediateStepEvent(BaseModel):
         return {k: v for k, v in result.items() if v is not None}
 
 
+def build_final_report_event(content: str, *, cited_urls: Sequence[str] | None = None) -> IntermediateStepEvent:
+    """Build the canonical final-report artifact event."""
+    data: dict[str, Any] = {
+        "type": ArtifactType.OUTPUT.value,
+        "content": content,
+        "output_category": "final_report",
+    }
+    if cited_urls is not None:
+        data["cited_urls"] = list(cited_urls)
+    return IntermediateStepEvent(
+        category=EventCategory.ARTIFACT,
+        state=EventState.UPDATE,
+        data=EventData(**data),
+    )
+
+
 class ToolArtifactMapping:
     """
     Maps tool names to artifact types for automatic artifact emission.
@@ -136,6 +155,7 @@ class ToolArtifactMapping:
     """
 
     def __init__(self):
+        """Initialize an empty tool-to-artifact mapping and register the defaults."""
         self._mappings: dict[str, dict] = {}
         self._register_defaults()
 
@@ -205,9 +225,11 @@ class AgentEventCallback(BaseCallbackHandler):
     """
 
     OUTPUT_MIN_LENGTH = 200
-    URL_PATTERN = re.compile(r'https?://[^\s<>"\')\]}>]+', re.IGNORECASE)
     SEARCH_TOOL_PATTERNS = {"search", "tavily", "web_search", "google", "bing"}
     TOOL_CALL_PATTERN = re.compile(r'\b[a-z][a-z0-9_]*\s*\(\s*(?:["\'{]|[a-z_]+\s*=)', re.IGNORECASE)
+    SANDBOX_EXEC_TOOLS = frozenset({"execute"})
+    SANDBOX_FILE_TOOLS = frozenset({"write_file", "read_file", "edit_file", "ls"})
+    SHARED_FS_PREFIX = "/shared"
 
     AGENT_PATTERNS = {"agent"}
     AGENT_EXCLUDE_PATTERNS = {"middleware", "handler", "callback"}
@@ -221,6 +243,12 @@ class AgentEventCallback(BaseCallbackHandler):
         event_store: EventStore | None = None,
         tool_artifact_mapping: ToolArtifactMapping | None = None,
     ):
+        """Wire the event store and tool/artifact mapping and init per-job URL caches.
+
+        Args:
+            event_store: Sink for SSE events; None disables emission.
+            tool_artifact_mapping: Mapping of tools to artifact types; a default is used when omitted.
+        """
         super().__init__()
         self._event_store = event_store
         self._tool_mapping = tool_artifact_mapping or ToolArtifactMapping()
@@ -228,6 +256,7 @@ class AgentEventCallback(BaseCallbackHandler):
         self._run_id_to_name: dict[str, str] = {}
         self._run_id_to_parent: dict[str, str] = {}
         self._agent_run_ids: dict[str, str] = {}  # {run_id: name}
+        self._run_id_to_sandbox_tool: dict[str, bool] = {}
 
         self._job_id = event_store.job_id if event_store else None
         self._instance_discovered_urls: set[str] = set()
@@ -299,6 +328,7 @@ class AgentEventCallback(BaseCallbackHandler):
         return metadata if metadata else None
 
     def _emit(self, event: IntermediateStepEvent):
+        """Store an event as an SSE dict when an event store is configured."""
         if self._event_store:
             self._event_store.store(event.to_sse_dict())
 
@@ -341,28 +371,48 @@ class AgentEventCallback(BaseCallbackHandler):
         )
 
     def _get_chain_name(self, serialized: dict | None, **kwargs) -> str:
+        """Resolve a human-readable chain name from serialized data or kwargs."""
         if serialized:
             name = serialized.get("name") or serialized.get("id", [""])[-1]
             if name:
                 return name
         return kwargs.get("name", "unknown")
 
+    def _is_sandbox_tool(self, tool_name: str, parsed_input: Any) -> bool:
+        """Return whether a tool call runs against the provisioned sandbox."""
+        if tool_name in self.SANDBOX_EXEC_TOOLS:
+            return True
+        if tool_name not in self.SANDBOX_FILE_TOOLS or not isinstance(parsed_input, dict):
+            return False
+        path = str(parsed_input.get("file_path") or parsed_input.get("path") or parsed_input.get("filename") or "")
+        in_shared = path == self.SHARED_FS_PREFIX or path.startswith(self.SHARED_FS_PREFIX + "/")
+        return bool(path and not in_shared)
+
     def _get_source_registry(self):
         """Return the session-scoped SourceRegistry if set, otherwise None."""
         return get_session_registry()
 
-    def emit_final_report(self, content: str) -> None:
+    def emit_final_report(self, content: str, *, cited_urls: Sequence[str] | None = None) -> None:
         """Emit the post-processed final report as an OUTPUT artifact.
 
         Call this after citation verification and sanitisation so the
         frontend receives the verified content (overwrites the earlier
-        auto-emitted version).
+        auto-emitted version). ``cited_urls`` must come from citation
+        verification; when supplied, it is the authoritative citation set for
+        the published report.
         """
-        self._emit_artifact(
-            ArtifactType.OUTPUT,
-            content,
-            output_category="final_report",
-        )
+        verified_visible_urls = self._verified_visible_urls(content, cited_urls) if cited_urls is not None else None
+        self._emit(build_final_report_event(content, cited_urls=verified_visible_urls))
+        if verified_visible_urls is not None:
+            for url in verified_visible_urls:
+                self._cited_urls.add(self._normalize_url(url))
+                self._emit_artifact(
+                    ArtifactType.CITATION_USE,
+                    url,
+                    name=url,
+                    url=url,
+                    final_report=True,
+                )
 
     def _is_search_tool(self, tool_name: str) -> bool:
         """Check if tool is a search-related tool that returns URLs."""
@@ -413,15 +463,19 @@ class AgentEventCallback(BaseCallbackHandler):
 
     def _extract_urls(self, text: str) -> list[str]:
         """Extract unique URLs from text content."""
-        if not text:
-            return []
-        urls = self.URL_PATTERN.findall(str(text))
-        cleaned = []
-        for url in urls:
-            url = url.rstrip(".,;:!?)'\"]}>)")
-            if len(url) > 10 and "." in url:
-                cleaned.append(url)
-        return list(dict.fromkeys(cleaned))
+        return [url for url in extract_http_urls(text) if len(url) > 10 and "." in url]
+
+    def _verified_visible_urls(self, content: str, cited_urls: Sequence[str]) -> list[str]:
+        """Keep only verified citation URLs that remain visible in the final report."""
+        visible_urls = {self._normalize_url(url) for url in self._extract_urls(content)}
+        result: list[str] = []
+        seen: set[str] = set()
+        for url in cited_urls:
+            normalized = self._normalize_url(url)
+            if normalized in visible_urls and normalized not in seen:
+                seen.add(normalized)
+                result.append(url)
+        return result
 
     def _get_output_category(self, agent_info: tuple[str, str] | None = None) -> str:
         """
@@ -521,6 +575,7 @@ class AgentEventCallback(BaseCallbackHandler):
             self._emit_artifact(artifact_type, content, name=name, **extra_data)
 
     def on_chain_start(self, serialized: dict | None, inputs: dict, **kwargs) -> None:
+        """Track the run/parent lineage and emit an agent.start event for agent-like chains."""
         name = self._get_chain_name(serialized, **kwargs)
         run_id = str(kwargs.get("run_id", ""))
         parent_run_id = str(kwargs.get("parent_run_id", "")) if kwargs.get("parent_run_id") else ""
@@ -544,6 +599,7 @@ class AgentEventCallback(BaseCallbackHandler):
             )
 
     def on_chain_end(self, outputs: dict, **kwargs) -> None:
+        """Emit an agent.end event for agent-like chains and clear run bookkeeping."""
         run_id = str(kwargs.get("run_id", ""))
         name = self._run_id_to_name.pop(run_id, kwargs.get("name", ""))
 
@@ -592,6 +648,7 @@ class AgentEventCallback(BaseCallbackHandler):
         return serialized[: self.TOOL_INPUT_TRIM_LIMIT] + "..."
 
     def on_tool_start(self, serialized: dict | None, input_str: str, **kwargs) -> None:
+        """Emit a tool.start event and record sandbox/lineage state for the tool run."""
         tool_name = serialized.get("name", "unknown") if serialized else "unknown"
         run_id = str(kwargs.get("run_id", ""))
         parent_run_id = str(kwargs.get("parent_run_id", "")) if kwargs.get("parent_run_id") else ""
@@ -604,6 +661,9 @@ class AgentEventCallback(BaseCallbackHandler):
         parsed_input = self._parse_tool_input(input_str)
 
         emit_input = self._trim_tool_input(parsed_input)
+        is_sandbox_tool = self._is_sandbox_tool(tool_name, parsed_input)
+        if run_id:
+            self._run_id_to_sandbox_tool[run_id] = is_sandbox_tool
 
         self._emit(
             IntermediateStepEvent(
@@ -611,15 +671,17 @@ class AgentEventCallback(BaseCallbackHandler):
                 state=EventState.START,
                 name=tool_name,
                 data=EventData(input=emit_input) if emit_input else None,
-                metadata=self._build_metadata_for_run(run_id),
+                metadata=self._build_metadata_for_run(run_id, sandbox=True if is_sandbox_tool else None),
             )
         )
 
         self._emit_tool_artifact(tool_name, parsed_input, run_id=run_id)
 
     def on_tool_end(self, output: str, **kwargs) -> None:
+        """Emit a tool.end event and clear the tool run's lineage/sandbox state."""
         run_id = str(kwargs.get("run_id", ""))
         tool_name = self._run_id_to_name.pop(run_id, kwargs.get("name", "unknown"))
+        is_sandbox_tool = self._run_id_to_sandbox_tool.pop(run_id, False)
 
         agent_info = self._find_agent_for_run(run_id)
 
@@ -629,7 +691,7 @@ class AgentEventCallback(BaseCallbackHandler):
                 state=EventState.END,
                 name=tool_name,
                 data=None,
-                metadata=self._build_metadata_for_run(run_id),
+                metadata=self._build_metadata_for_run(run_id, sandbox=True if is_sandbox_tool else None),
             )
         )
 
@@ -652,6 +714,7 @@ class AgentEventCallback(BaseCallbackHandler):
         self._run_id_to_parent.pop(run_id, None)
 
     def on_llm_start(self, serialized: dict, prompts: list, **kwargs) -> None:
+        """Emit an llm.start event for a completion-style model call."""
         model_name = "unknown"
         if serialized:
             model_name = serialized.get("name") or serialized.get("id", ["unknown"])[-1]
@@ -677,7 +740,8 @@ class AgentEventCallback(BaseCallbackHandler):
         )
 
     def on_llm_new_token(self, token: str, **kwargs) -> None:
-        if token:
+        """Emit a streaming llm.chunk event for each non-empty token."""
+        if token and SUPPRESS_OUTPUT_ARTIFACT_TAG not in (kwargs.get("tags") or []):
             self._emit(
                 IntermediateStepEvent(
                     category=EventCategory.LLM,
@@ -690,6 +754,7 @@ class AgentEventCallback(BaseCallbackHandler):
     THINKING_TRIM_SUFFIX = " [Trimmed - check traces for full logs]"
 
     def on_llm_end(self, response, **kwargs) -> None:
+        """Emit an llm.end event with content, thinking, and token usage."""
         run_id = str(kwargs.get("run_id", ""))
         model_name = self._run_id_to_name.pop(run_id, "unknown")
 
@@ -720,6 +785,7 @@ class AgentEventCallback(BaseCallbackHandler):
             and len(content) >= self.OUTPUT_MIN_LENGTH
             and not has_tool_calls
             and not self._contains_tool_call_syntax(content)
+            and SUPPRESS_OUTPUT_ARTIFACT_TAG not in (kwargs.get("tags") or [])
         ):
             output_category = self._get_output_category(agent_info)
             self._emit_artifact(
@@ -734,6 +800,7 @@ class AgentEventCallback(BaseCallbackHandler):
         self._run_id_to_parent.pop(run_id, None)
 
     def on_chat_model_start(self, serialized: dict, messages: list, **kwargs) -> None:
+        """Emit an llm.start event for a chat-model call."""
         model_name = "unknown"
         if serialized:
             model_name = serialized.get("name") or serialized.get("kwargs", {}).get("model", "unknown")

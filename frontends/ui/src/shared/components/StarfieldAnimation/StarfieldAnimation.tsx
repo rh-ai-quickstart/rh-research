@@ -13,7 +13,7 @@ const DEFAULT_MAX_RADIUS = 50
 const DEFAULT_PARTICLE_SIZE = 2.0
 const DEFAULT_ROTATION_SPEED = 0.001
 const DEFAULT_SEED = 12345
-const DEFAULT_PARTICLE_COLOR = '118, 185, 0'
+const DEFAULT_PARTICLE_COLOR = '238, 0, 0' // Red Hat red (#EE0000)
 
 /**
  * Animated starfield background using canvas.

@@ -1,0 +1,254 @@
+# vLLM Configuration for Web mode.
+#
+# Uses OpenAI-compatible endpoints served by vLLM.
+# Set VLLM_BASE_URL to your vLLM server (default: http://localhost:8000).
+# Set VLLM_API_KEY if your vLLM server requires authentication (default: no-key).
+#
+# Features:
+# - Knowledge retrieval using LlamaIndex
+# - Web search and Paper search tools by default
+# - All LLMs routed to vLLM via _type: openai
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: INFO
+
+  front_end:
+    _type: aiq_api
+    runner_class: aiq_api.plugin.AIQAPIWorker
+    db_url: ${NAT_JOB_STORE_DB_URL:-sqlite+aiosqlite:///./jobs.db}
+    expiry_seconds: 86400
+    cors:
+      allow_origin_regex: 'http://localhost(:\d+)?|http://127.0.0.1(:\d+)?'
+      allow_methods:
+        - GET
+        - POST
+        - DELETE
+        - OPTIONS
+      allow_headers:
+        - "*"
+      allow_credentials: true
+      expose_headers:
+        - "*"
+
+# ===========================================================================
+# max_tokens sizing — READ THIS BEFORE CHANGING THE DEFAULTS BELOW
+#
+# The committed max_tokens defaults deliberately match NIM scale. vLLM-hosted
+# is NOT a synonym for small: on Red Hat AI (OpenShift AI / KServe) we serve
+# Nemotron-3-scale models (Super 120b-a12b, Ultra 550b-a55b) through vLLM just
+# as readily as through NIM. A default tuned for a 16k endpoint would silently
+# truncate deep-research synthesis on the large-context deployments this config
+# is built for. Scale DOWN for constrained endpoints; do not lower the default.
+#
+# HARD CONSTRAINT: max_tokens must be <= the server's --max-model-len, or vLLM
+# returns HTTP 400. This depends on how the endpoint was LAUNCHED, not on how
+# big the model is — serving-side tuning for throughput routinely shrinks the
+# window far below what the model supports. (On the DGX Spark, --max-model-len
+# was cut 262144 -> 32768 to buy concurrency, so a 120B model needed
+# VLLM_ORCHESTRATOR_MAX_TOKENS=8192.)
+#
+# To size: read the real window from `curl $VLLM_BASE_URL/v1/models`
+# (max_model_len), keep every role strictly below it with prompt headroom, and
+# allow 2-3x on reasoning models where hidden reasoning tokens count toward the
+# budget. Override per role via env — do not edit these defaults:
+#   VLLM_INTENT_MAX_TOKENS  VLLM_RESEARCHER_MAX_TOKENS
+#   VLLM_ORCHESTRATOR_MAX_TOKENS  VLLM_WRITER_MAX_TOKENS
+#
+# Startup validation (validate_llm_endpoints) warns when max_tokens exceeds the
+# endpoint's reported context window. See docs/source/customization/
+# vllm-decisions.md (Decision 6) for the full rationale and two case studies.
+# ===========================================================================
+
+llms:
+  # Intent classification — fast, small model
+  # Set VLLM_INTENT_BASE_URL alongside VLLM_BASE_URL (same value unless intent
+  # classification is served by a separate vLLM instance). NAT's env expansion
+  # does not support nested ${VAR:-${OTHER}} defaults, so this cannot fall
+  # back to VLLM_BASE_URL automatically — leaving it unset uses localhost.
+  intent_llm:
+    _type: openai
+    model_name: ${VLLM_INTENT_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+    base_url: ${VLLM_INTENT_BASE_URL:-http://localhost:8000}/v1
+    api_key: ${VLLM_API_KEY:-no-key}
+    temperature: 0.5
+    top_p: 0.9
+    # 4096 matches every NIM config. Do NOT lower this: on a truncated response
+    # vLLM returns content=None with finish_reason="length" and no error, and the
+    # intent classifier silently defaults to SHALLOW research with no log line
+    # (chat_researcher/nodes/intent_classifier.py). Deep research then never
+    # triggers and the logs look clean. Reasoning models spend part of this budget
+    # on hidden reasoning tokens before emitting any JSON.
+    max_tokens: ${VLLM_INTENT_MAX_TOKENS:-4096}
+    # Reasoning control. Default null = no directive, which is safe on ANY model.
+    # VLLM_THINKING=false injects /no_think (Nemotron only — NAT's GatedFieldMixin
+    # raises on other models). Provided as an escape hatch, NOT a performance fix:
+    # A/B testing on Nemotron-3-Super showed /no_think does not reduce latency or
+    # token count, and this build emits no separated reasoning trace for our
+    # prompts. See docs/source/customization/vllm-results.md.
+    thinking: ${VLLM_THINKING:-null}
+
+  # Shallow research and general agent work
+  researcher_llm:
+    _type: openai
+    model_name: ${VLLM_RESEARCHER_MODEL:-meta-llama/Llama-3.1-70B-Instruct}
+    base_url: ${VLLM_BASE_URL:-http://localhost:8000}/v1
+    api_key: ${VLLM_API_KEY:-no-key}
+    temperature: 0.1
+    top_p: 0.3
+    max_tokens: ${VLLM_RESEARCHER_MAX_TOKENS:-16384}
+    thinking: ${VLLM_THINKING:-null}
+
+  # Deep research orchestrator and planner — large context model
+  orchestrator_llm:
+    _type: openai
+    model_name: ${VLLM_ORCHESTRATOR_MODEL:-Qwen/Qwen2.5-72B-Instruct}
+    base_url: ${VLLM_BASE_URL:-http://localhost:8000}/v1
+    api_key: ${VLLM_API_KEY:-no-key}
+    temperature: 1.0
+    top_p: 1.0
+    max_tokens: ${VLLM_ORCHESTRATOR_MAX_TOKENS:-128000}
+    thinking: ${VLLM_THINKING:-null}
+
+  # Final report synthesis (deep research writer) and report follow-up Q&A.
+  # Kept separate from orchestrator_llm: report follow-up resolves
+  # `writer_llm or orchestrator_llm` and runs under a hard, non-configurable
+  # module timeout, so it must not inherit the orchestrator's large max_tokens.
+  writer_llm:
+    _type: openai
+    model_name: ${VLLM_WRITER_MODEL:-meta-llama/Llama-3.1-70B-Instruct}
+    base_url: ${VLLM_BASE_URL:-http://localhost:8000}/v1
+    api_key: ${VLLM_API_KEY:-no-key}
+    temperature: 0.7
+    top_p: 0.7
+    max_tokens: ${VLLM_WRITER_MAX_TOKENS:-16384}
+    thinking: ${VLLM_THINKING:-null}
+
+  # Document summarization — small, fast model
+  summary_llm:
+    _type: openai
+    model_name: ${VLLM_SUMMARY_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+    base_url: ${VLLM_BASE_URL:-http://localhost:8000}/v1
+    api_key: ${VLLM_API_KEY:-no-key}
+    temperature: 0.3
+    # Env-overridable, unlike the NIM configs' hardcoded 100: VLLM_SUMMARY_MODEL is
+    # operator-supplied and may be the same reasoning endpoint as every other role,
+    # where 100 tokens is consumed before any content is emitted. A truncated
+    # summary is stored silently as an empty string.
+    max_tokens: ${VLLM_SUMMARY_MAX_TOKENS:-512}
+    thinking: ${VLLM_THINKING:-null}
+
+functions:
+  # =========================================================================
+  # Data Source Registry — controls UI source toggles, per-message filtering,
+  # and agent tool auto-inheritance. Agents with no explicit `tools` list
+  # inherit every tool listed here; use `exclude_tools` to specialize.
+  # See docs/source/customization/tools-and-sources.md.
+  # =========================================================================
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: web_search
+        name: "Web Search"
+        description: "Search the web for real-time information."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Search uploaded documents and files."
+        tools:
+          - knowledge_search
+      # Uncomment when paper_search_tool is enabled (requires SERPER_API_KEY)
+      # - id: paper_search
+      #   name: "Academic Papers"
+      #   description: "Search academic papers and scientific publications."
+      #   tools:
+      #     - paper_search_tool
+
+  web_search_tool:
+    _type: tavily_web_search
+    max_results: 5
+    max_content_length: 1000
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 2
+    advanced_search: true
+
+  # Knowledge Retrieval (see sources/knowledge_layer/KNOWLEDGE-LAYER-SETUP.md)
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: llamaindex
+    collection_name: ${COLLECTION_NAME:-test_collection}
+    generate_summary: true
+    summary_model: summary_llm
+    summary_db: ${AIQ_SUMMARY_DB:-sqlite+aiosqlite:///./summaries.db}
+    top_k: 5
+    chroma_dir: ${AIQ_CHROMA_DIR:-/tmp/chroma_data}
+
+  # Paper Search (optional - requires SERPER_API_KEY)
+  # Uncomment this block AND the paper_search entry in the registry above to enable.
+  # paper_search_tool:
+  #   _type: paper_search
+  #   max_results: 5
+  #   serper_api_key: ${SERPER_API_KEY}
+
+  # =========================================================================
+  # Agents — omit `tools` to inherit all sources from data_source_registry
+  # =========================================================================
+  intent_classifier:
+    _type: intent_classifier
+    llm: intent_llm
+    # tools: omitted -> inherits all from data_source_registry
+    verbose: true
+    # Per-call LLM timeout (seconds) for intent classification. Default 90; raise
+    # via env for slow self-hosted endpoints (e.g. a large quantized model on
+    # modest hardware). This is the field IntentClassifierConfig actually reads.
+    llm_timeout: ${VLLM_LLM_TIMEOUT:-90}
+
+  clarifier_agent:
+    _type: clarifier_agent
+    llm: researcher_llm
+    # tools: omitted -> inherits all from data_source_registry
+    # NOTE: planner_llm / enable_plan_approval / max_plan_iterations were removed
+    # from ClarifierConfig upstream (AI-Q 2.2, d942536) — plan approval is gone and
+    # planning moved inside the deep-research workflow. They are inert on 2.1 too.
+    max_turns: 3
+    log_response_max_chars: 2000
+    verbose: true
+
+  shallow_research_agent:
+    _type: shallow_research_agent
+    llm: researcher_llm
+    # tools: omitted -> inherits all from data_source_registry
+    exclude_tools:                     # Remove advanced variant; shallow uses web_search_tool
+      - advanced_web_search_tool
+    verbose: true
+    max_llm_turns: 10
+    max_tool_iterations: 5
+
+  deep_research_agent:
+    _type: deep_research_agent
+    orchestrator_llm: orchestrator_llm
+    researcher_llm: researcher_llm
+    planner_llm: orchestrator_llm
+    writer_llm: writer_llm
+    # tools: omitted -> inherits all from data_source_registry
+    exclude_tools:                     # Remove basic variant; deep uses advanced_web_search_tool
+      - web_search_tool
+    # NOTE: no max_loops or verbose here. Neither is a DeepResearchAgentConfig
+    # field (verbose was removed upstream in 59aa926), and the schema sets
+    # extra="forbid", so any stray key is a hard load error.
+
+workflow:
+  _type: chat_deepresearcher_agent
+  verbose: true
+  enable_escalation: true
+  enable_clarifier: true
+  use_async_deep_research: true
+  checkpoint_db: ${AIQ_CHECKPOINT_DB:-./checkpoints.db}

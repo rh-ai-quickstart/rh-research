@@ -410,29 +410,22 @@ describe('InputArea', () => {
     expect(screen.getByRole('textbox')).not.toBeDisabled()
   })
 
-  test('shows research completed placeholder when deep research is done', () => {
+  test('allows follow-up input when deep research is done', async () => {
+    const user = userEvent.setup()
     mockDeepResearchStatus = 'success'
     mockIsDeepResearchStreaming = false
     mockDeepResearchOwnerConversationId = 'session-1'
 
     render(<InputArea isAuthenticated={true} connectionMode="websocket" />)
 
-    expect(
-      screen.getByPlaceholderText('Research completed. Create a new session for further questions.')
-    ).toBeInTheDocument()
-    expect(screen.getByRole('textbox')).toBeDisabled()
-  })
+    const textbox = screen.getByRole('textbox')
+    expect(textbox).not.toBeDisabled()
+    expect(screen.getByPlaceholderText('Check data sources and ask a research question...')).toBeInTheDocument()
 
-  test('shows research completed tooltip on send button when research is done', () => {
-    mockDeepResearchStatus = 'success'
-    mockIsDeepResearchStreaming = false
-    mockDeepResearchOwnerConversationId = 'session-1'
+    await user.type(textbox, 'Make the report shorter')
+    await user.click(screen.getByRole('button', { name: /send message/i }))
 
-    render(<InputArea isAuthenticated={true} connectionMode="websocket" />)
-
-    expect(
-      screen.getByRole('button', { name: /research completed - create new session/i })
-    ).toBeInTheDocument()
+    expect(mockSendMessage).toHaveBeenCalledWith('Make the report shorter')
   })
 
   test('shows research in progress send button when deep research is active and streaming', () => {
@@ -449,6 +442,25 @@ describe('InputArea', () => {
     expect(
       screen.getByRole('button', { name: /research in progress - please wait/i })
     ).toBeInTheDocument()
+  })
+
+  test('does not show Stop while a DIFFERENT session runs deep research', () => {
+    // Session B is current; a deep research job streams but is owned by session A.
+    // The ownership-scoped useIsCurrentSessionBusy returns false here, so this
+    // session shows the normal Send button, never a Stop that would disconnect
+    // its own socket, and no research-in-progress popover (B does not own it).
+    vi.mocked(useIsCurrentSessionBusy).mockReturnValue(false)
+    mockIsDeepResearchStreaming = true
+    mockDeepResearchStatus = 'running'
+    mockDeepResearchOwnerConversationId = 'session-A'
+
+    render(<InputArea isAuthenticated={true} connectionMode="websocket" />)
+
+    expect(screen.queryByRole('button', { name: /stop generating/i })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /research in progress/i })
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /send message/i })).toBeInTheDocument()
   })
 
   test('does not allow sending when session is busy', () => {

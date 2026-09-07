@@ -13,8 +13,9 @@ Validation"); this file is a convenience index, not a new source of truth.
 ## One-time environment setup
 
 ```bash
-./scripts/setup.sh          # one-time environment setup
-uv sync --group dev         # ensure dev dependencies (ruff, pytest) are present
+./scripts/setup.sh                    # one-time environment setup
+uv sync --group dev                   # root AI-Q development environment
+uv sync --project mcp --extra dev     # independent MCP development environment
 ```
 
 ## Backend Python — `src/`, `sources/`, `tests/`
@@ -46,6 +47,19 @@ Expected: Ruff reports no lint or format failures for the changed code, and the
 selected tests pass. Ruff config (line length 120; rule sets `E,F,W,I,PL,UP`)
 lives in `pyproject.toml`.
 
+## MCP server — `mcp/`
+
+```bash
+uv sync --project mcp --extra dev
+uv run ruff check mcp
+uv run ruff format --check mcp
+uv run --project mcp --extra dev pytest mcp/tests
+```
+
+Set `AIQ_MCP_TEST_DB_URL` to a disposable PostgreSQL database to include the
+database-backed job, checkpoint, restart, and NAT-load tests. Those tests create
+and drop tables, so never point them at a service or production database.
+
 ## Web UI — `frontends/ui/`
 
 ```bash
@@ -57,8 +71,8 @@ npm run test:ci
 npm run build     # when the change could affect the production build
 ```
 
-Expected: each command exits cleanly. Only `lint`, `type-check`, `test`,
-`test:ci`, and `build` are defined in `package.json` — do not invent scripts.
+Expected: each command exits cleanly. Stick to the canonical checks `lint`,
+`type-check`, `test:ci`, and `build` from `package.json`; do not invent scripts.
 Include a screenshot for user-visible changes.
 
 ## Docs — `docs/`
@@ -98,4 +112,3 @@ nat serve --config_file configs/config_cli_default.yml --port 8000
 ```
 
 The backend API serves at `http://localhost:8000`.
-</content>

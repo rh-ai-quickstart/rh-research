@@ -12,7 +12,7 @@ This guide walks through setting up the AI-Q blueprint for local development. Fo
 | Requirement | Version | Notes |
 |-------------|---------|-------|
 | Python | 3.11 -- 3.13 | 3.13 recommended |
-| [uv](https://github.com/astral-sh/uv) | latest | Python package manager (installed automatically by the setup script if missing) |
+| [uv](https://github.com/astral-sh/uv) | 0.11.25+ | Python package manager (installed automatically by the setup script if missing; CI uses 0.11.26) |
 | Git | 2.x+ | |
 | Node.js | 22+ | Optional -- only needed for the web UI |
 
@@ -25,20 +25,27 @@ When using [NVIDIA API Catalog](https://build.nvidia.com/) (the default), infere
 
 | Component | Default Model | Self-Hosted Hardware Reference |
 |-----------|---------------|-------------------------------|
-| LLM (intent classifier, orchestrator, planner) | `nvidia/nemotron-3-super-120b-a12b` | [Nemotron 3 Super support matrix](https://docs.nvidia.com/nim/large-language-models/latest/supported-models.html#nvidia-nemotron-3-super) |
-| LLM (deep research researcher) | `nvidia/nemotron-3-super-120b-a12b` | [Nemotron 3 Super support matrix](https://docs.nvidia.com/nim/large-language-models/latest/supported-models.html#nvidia-nemotron-3-super) |
-| LLM (deep research orchestrator/planner, optional) | `openai/gpt-oss-120b` | [GPT OSS support matrix](https://docs.nvidia.com/nim/large-language-models/latest/supported-models.html#gpt-oss-120b) |
-| Document summary (optional) | `nvidia/nemotron-mini-4b-instruct` | [Nemotron Mini 4B](https://build.nvidia.com/nvidia/nemotron-mini-4b-instruct/) |
-| Text embedding | `nvidia/llama-nemotron-embed-vl-1b-v2` | [NeMo Retriever embedding support matrix](https://docs.nvidia.com/nim/nemo-retriever/text-embedding/latest/support-matrix.html) |
-| VLM (image/chart extraction, optional) | `nvidia/nemotron-nano-12b-v2-vl` | [Vision language model support matrix](https://docs.nvidia.com/nim/vision-language-models/latest/support-matrix.html#nemotron-nano-12b-v2-vl) |
+| LLM (intent classifier, shallow researcher) | `nvidia/nemotron-3.5-lightning-30b-a3b` | [Nemotron 3.5 Lightning](https://build.nvidia.com/nvidia/nemotron-3.5-lightning-30b-a3b/modelcard) |
+| LLM (clarifier and all deep-research roles) | `nvidia/nemotron-3-ultra-550b-a55b` | [Nemotron 3 Ultra](https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b) |
+| Document summary (optional) | `google/gemma-4-31b-it` | [Gemma 4 31B IT](https://build.nvidia.com/google/gemma-4-31b-it) |
+| Text embedding | `nvidia/nemotron-3-embed-1b` | [NeMo Retriever embedding support matrix](https://docs.nvidia.com/nim/nemo-retriever/text-embedding/latest/support-matrix.html) |
+| VLM (image/chart extraction, optional) | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | [Nemotron 3 Nano Omni](https://build.nvidia.com/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning) |
 | Knowledge layer (Foundational RAG, optional) | -- | [RAG Blueprint support matrix](https://docs.nvidia.com/rag/latest/support-matrix.html) |
+
+```{warning}
+The NVIDIA API Catalog serving profile for Nemotron 3.5 Lightning has a known shallow citation-output limitation.
+AI-Q fails closed rather than publishing a citation-incomplete draft. The Brev getting-started launchable therefore
+uses Nemotron Ultra for shallow research while retaining Lightning for intent classification. See
+[Troubleshooting](../resources/troubleshooting.md#nemotron-35-lightning-on-nvidia-api-catalog) for details and the
+self-hosted Lightning option.
+```
 
 ## Automated Setup (Recommended)
 
 The setup script handles everything -- virtual environment, Python dependencies, and UI dependencies:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/NVIDIA-AI-Blueprints/aiq.git
 cd aiq
 
 ./scripts/setup.sh
@@ -46,12 +53,12 @@ cd aiq
 
 The script performs the following steps:
 
-1. Installs `uv` if not already present
+1. Installs `uv` if not already present and rejects versions older than 0.11.25
 2. Creates a Python 3.13 virtual environment at `.venv/`
 3. Installs the core package with dev dependencies
 4. Installs all frontends (CLI, debug console, API server)
 5. Installs benchmark packages (freshqa, deepsearch_qa)
-6. Installs all data source plugins (Tavily, Exa, Google Scholar, knowledge layer)
+6. Installs the data source plugins (Tavily, Exa, Nimble, You.com, Google Scholar) and the LlamaIndex and Foundational RAG knowledge extras
 7. Sets up pre-commit hooks
 8. Copies `deploy/.env.example` to `deploy/.env` if no `.env` file exists
 9. Installs UI npm dependencies (if Node.js is available)
@@ -69,8 +76,8 @@ If you prefer to install components selectively, follow these steps.
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/NVIDIA-AI-Blueprints/aiq.git
-cd aiq
+git clone -b red-hat-v2.1.0 https://github.com/rh-ai-quickstart/rh-research.git
+cd rh-research
 ```
 
 ### 2. Create the Virtual Environment
@@ -96,8 +103,14 @@ uv pip install -e ./frontends/aiq_api      # Unified API server (includes debug)
 # Data sources (pick what you need)
 uv pip install -e ./sources/tavily_web_search
 uv pip install -e ./sources/exa_web_search
+uv pip install -e ./sources/nimble_web_search
+uv pip install -e ./sources/you_com
+uv pip install -e ./sources/duckduckgo_news_search
+uv pip install -e ./sources/polymarket_prediction_market
 uv pip install -e ./sources/google_scholar_paper_search
 uv pip install -e "./sources/knowledge_layer[llamaindex,foundational_rag]"
+# Or include the OpenSearch backend as well:
+uv pip install -e "./sources/knowledge_layer[llamaindex,foundational_rag,opensearch]"
 
 # Benchmarks (optional)
 uv pip install -e ./frontends/benchmarks/freshqa
@@ -132,9 +145,40 @@ Then edit `deploy/.env` and fill in your keys.
 |----------|----------|---------|
 | `TAVILY_API_KEY` | [Tavily](https://tavily.com/) | Web search (Tavily provider) |
 | `EXA_API_KEY` | [Exa](https://exa.ai/) | Web search (Exa provider) |
-| `SERPER_API_KEY` | [Serper](https://serper.dev/) | Academic paper search (Google Scholar). To enable, uncomment `paper_search_tool` in your config file |
+| `NIMBLE_API_KEY` | [Nimble](https://nimbleway.com/) | Web search (Nimble provider) |
+| `SERPER_API_KEY` | [Serper](https://serper.dev/) | Google Scholar paper search with `provider: serper` (the default) |
+| `SERPAPI_API_KEY` | [SerpAPI](https://serpapi.com/) | Google Scholar paper search with `provider: serpapi` |
+| `SEARCHAPI_API_KEY` | [SearchAPI](https://www.searchapi.io/) | Google Scholar paper search with `provider: searchapi` |
 
-At minimum, you need `NVIDIA_API_KEY` for LLM inference and one of `TAVILY_API_KEY` or `EXA_API_KEY` for web search. Paper search (`SERPER_API_KEY`) is disabled by default in the shipped configs -- refer to the comments in your config file to enable it.
+At minimum, you need `NVIDIA_API_KEY` for LLM inference and a credential for the web provider selected by your config.
+Paper search requires one provider-specific key. It is commented out in the standard CLI and web profiles, while
+`configs/config_domain_routing_and_skills.yml` enables the default Serper provider. DuckDuckGo News and Polymarket use
+public endpoints and do not require API keys.
+
+OpenSearch uses endpoint-specific authentication rather than one universal API key. Install the `opensearch` extra,
+start from `configs/config_web_opensearch.yml`, and configure `none`, `basic`, or SigV4 authentication. For Amazon
+OpenSearch Serverless, follow the [AOSS deployment guide](../deployment/aws-opensearch-serverless.md).
+
+### OpenAI-compatible Endpoints (vLLM / MaaS)
+
+If you plan to run against a local vLLM server, a Red Hat Model-as-a-Service (MaaS) endpoint, or any other OpenAI-compatible backend instead of NVIDIA NIM, set the following variables in `deploy/.env` and launch with `configs/config_web_vllm.yml`. When `VLLM_BASE_URL` is set, `NVIDIA_API_KEY` is not required.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `VLLM_BASE_URL` | `http://localhost:8000` | Base URL of your vLLM / MaaS server |
+| `VLLM_API_KEY` | `no-key` | API key or bearer token (vLLM accepts any string when auth is disabled) |
+| `VLLM_INTENT_MODEL` | `meta-llama/Llama-3.1-8B-Instruct` | Model for intent classification |
+| `VLLM_RESEARCHER_MODEL` | `meta-llama/Llama-3.1-70B-Instruct` | Model for shallow research and agent work |
+| `VLLM_ORCHESTRATOR_MODEL` | `Qwen/Qwen2.5-72B-Instruct` | Model for deep research orchestration and planning |
+| `VLLM_SUMMARY_MODEL` | `meta-llama/Llama-3.1-8B-Instruct` | Model for document summarization |
+
+Refer to [Migrating to vLLM](../customization/vllm-migration.md) for a complete walkthrough and [MaaS Recipe: Kimi K2.5](../customization/maas-kimi-k25.md) for the Red Hat MaaS configuration.
+
+### Evaluation
+
+| Variable | Provider | Purpose |
+|----------|----------|---------|
+| `OPENAI_API_KEY` | [OpenAI](https://platform.openai.com/) | Judge models (gpt-4o) used by `nat eval` runs. Not needed for normal inference. |
 
 ## Verify Installation
 
