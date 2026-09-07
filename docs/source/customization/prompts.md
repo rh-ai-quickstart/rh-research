@@ -12,7 +12,9 @@ Each agent in the AI-Q blueprint uses [Jinja2](https://jinja.palletsprojects.com
 | Template | Consumer | Purpose |
 |----------|----------|---------|
 | `src/aiq_agent/agents/chat_researcher/prompts/intent_classification.j2` | Intent Classifier | Classifies queries as meta or research, determines depth (shallow/deep), generates meta responses |
+| `src/aiq_agent/agents/chat_researcher/prompts/context_aware_intent_router.j2` | Context-aware Intent Router | Classifies interactions, selects classic depth, and performs bounded catalog discovery for GSF-enabled workflows |
 | `src/aiq_agent/agents/shallow_researcher/prompts/researcher.j2` | Shallow Researcher | Defines the research persona, tool usage strategy, source hierarchy, and citation rules |
+| `src/aiq_agent/agents/data_science/prompts/agent.j2` | Data Science Agent | Guides adaptive semantic discovery, structured queries, document/web evidence gathering, and analytical synthesis |
 | `src/aiq_agent/agents/deep_researcher/prompts/orchestrator.j2` | Deep Research Orchestrator | Coordinates ordered routing, planning, batched research, and writer delegation; it does not call source tools directly |
 | `src/aiq_agent/agents/deep_researcher/prompts/source_router.j2` | Source Router | Selects an advisory route from the request-allowed source catalog before planning |
 | `src/aiq_agent/agents/deep_researcher/prompts/planner.j2` | Deep Research Planner | Grounds and returns a structured `ResearchPlan` with independent `ResearchQuery` objects |
@@ -30,6 +32,9 @@ src/aiq_agent/agents/
     shallow_researcher/
         prompts/
             researcher.j2              # Single system prompt
+    data_science/
+        prompts/
+            agent.j2                   # Adaptive analytical controller prompt
     deep_researcher/
         prompts/
             orchestrator.j2            # Orchestrator prompt
@@ -44,6 +49,7 @@ src/aiq_agent/agents/
     chat_researcher/
         prompts/
             intent_classification.j2   # Routing prompt
+            context_aware_intent_router.j2  # Catalog-aware routing prompt
 ```
 
 The naming convention follows each runtime role. `source_registry.j2` is a middleware-rendered fragment rather than an agent system prompt.
@@ -105,6 +111,13 @@ Each template receives different variables depending on the agent context.
 | `query` | `str` | The user's query text |
 | `active_report_available` | `bool` | Whether the conversation has a report that can be edited or extended |
 
+The GSF-enabled context-aware router also receives catalog availability and
+configured search bounds. For a mixed enterprise-and-public request, it sends a
+contiguous enterprise-data span copied verbatim from the user request as the
+catalog tool's `question`. It does not create a public-research subquery or
+plan, and the original user request remains the downstream research input.
+Python rejects a catalog question that is not a verbatim span of that request.
+
 ### Shallow Researcher
 
 | Variable | Type | Description |
@@ -113,6 +126,19 @@ Each template receives different variables depending on the agent context.
 | `user_info` | `dict` or `None` | User context with `name` and `email` keys |
 | `tools` | `list[dict]` | Available tools (each has `name` and `description` keys) |
 | `available_documents` | `list[dict]` or `None` | Uploaded documents with `file_name` and `summary` keys |
+
+### Data Science Agent
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `current_datetime` | `str` | Current date and time string |
+| `user_info` | `dict` or `None` | Authenticated user context |
+| `tools` | `list[dict]` | Exact configured tools, with `name` and `description` |
+| `interaction_mode` | `str` | `interactive` permits a concise clarification; `headless` requires a terminal answer without user input |
+| `response_mode` | `str` | `standard` for normal reports or `fdabench_choice` for labeled-choice output when options are present |
+| `structured_catalog_call_limit` | `int` or `None` | Optional request-local catalog-call ceiling rendered into the working rules |
+| `structured_text_to_sql_call_limit` | `int` or `None` | Optional request-local text-to-SQL-call ceiling rendered into the working rules |
+| `python_call_limit` | `int` or `None` | Optional call ceiling for stateless scientific Python execution |
 
 ### Deep Research Orchestrator
 
@@ -312,13 +338,15 @@ For advanced Jinja2 patterns (source hierarchy, default values, whitespace contr
 
 ## Testing Templates
 
-Set the `DEBUG_PROMPTS` environment variable to log rendered prompts:
+Set the `DEBUG_PROMPTS` environment variable to log prompt-rendering metadata:
 
 ```bash
 DEBUG_PROMPTS=1 .venv/bin/nat run --config_file configs/my_config.yml --input "test query"
 ```
 
-This logs the fully rendered system prompt before each LLM call, letting you verify variable substitution and conditional rendering.
+This logs the rendered prompt size and a stable correlation reference. It does not log the rendered prompt or
+user-provided content. Validate exact variable substitution and conditional rendering with unit tests that use
+synthetic, non-sensitive inputs.
 
 ## Best Practices
 

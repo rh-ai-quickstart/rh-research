@@ -6,6 +6,7 @@ the file from `configs/`. For the full nine-profile table, see
 
 1. **Run mode**
    - CLI only (`nat run`, `start_cli.sh`) → `config_cli_default.yml` (no `front_end`)
+   - Direct DS Agent development → `config_cli_data_science.yml` (no router or `front_end`)
    - Web UI / REST / async jobs / `aiq-research` → `config_web_*` or frontier/domain/skills profile (`front_end._type: aiq_api`)
 
 2. **Knowledge backend**
@@ -17,7 +18,7 @@ the file from `configs/`. For the full nine-profile table, see
 3. **Model family**
    - Nemotron → most profiles
    - GPT-5.2 orchestration/planning/writing → `config_frontier_models.yml` (`OPENAI_API_KEY`)
-   - GPT-OSS-120B → `config_web_default_guardrails.yml` or `config_openshell.yml`
+   - Default split → Nemotron 3.5 Lightning for intent/shallow; Ultra for clarification/deep research, with a larger writer budget
 
 4. **Optional features** — copy blocks from:
    - Guardrails → `config_web_default_guardrails.yml`

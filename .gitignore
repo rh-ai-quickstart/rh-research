@@ -48,6 +48,10 @@ env/
 *.log
 logs/
 
+# NeMo Relay local observability output (regeneratable; never commit payloads)
+/.nemo-relay/
+/relay/
+
 # Testing
 .pytest_cache/
 .coverage
@@ -69,6 +73,7 @@ htmlcov/
 *.db
 *.sqlite
 *.db-*
+.aiq-data/
 
 # Temporary files
 tmp/

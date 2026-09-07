@@ -241,9 +241,9 @@ functions:
     # tools: omitted -> inherits all from data_source_registry
     exclude_tools:                     # Remove basic variant; deep uses advanced_web_search_tool
       - web_search_tool
-    # NOTE: no max_loops here — it was never a DeepResearchAgentConfig field, and
-    # upstream AI-Q 2.2 sets extra="forbid", making any stray key a hard load error.
-    verbose: true
+    # NOTE: no max_loops or verbose here. Neither is a DeepResearchAgentConfig
+    # field (verbose was removed upstream in 59aa926), and the schema sets
+    # extra="forbid", so any stray key is a hard load error.
 
 workflow:
   _type: chat_deepresearcher_agent

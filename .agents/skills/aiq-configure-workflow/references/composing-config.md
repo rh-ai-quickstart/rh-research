@@ -54,18 +54,14 @@ general:
         level: INFO   # DEBUG | INFO | WARNING | ERROR
 ```
 
-**Tracing** — enable under `general.telemetry.tracing` (exporters can coexist).
-Uncomment the matching block in any `config_web_*.yml` or copy from
-`docs/source/deployment/observability.md`:
+**Observability** — configure NeMo Relay under `workflow.relay`. Relay logging,
+ATOF, and redaction are enabled by default. OTEL is opt-in; uncomment the Relay
+OpenInference endpoint in a default config to send traces to Phoenix. Omit
+`workflow.relay.pricing` unless the workflow intentionally loads an audited
+catalog. See `docs/source/deployment/observability.md`.
 
-| Backend | YAML `_type` | Setup notes |
-|---------|--------------|-------------|
-| Phoenix | `phoenix` | `phoenix serve`; set `endpoint`, `project` |
-| LangSmith | `langsmith` or env-only | `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` |
-| Weave | `weave` | `WANDB_API_KEY`; `project`, optional `redact_pii` |
-| OpenTelemetry | `otelcollector_redaction` | `endpoint`; redaction + batch fields |
-
-`verbose: true` on `workflow:` or agents adds console detail without a tracer.
+`workflow.relay.logging` controls the console subscriber; agent and workflow
+configs do not have separate verbose switches.
 
 ### `front_end` (`aiq_api`)
 
@@ -97,7 +93,7 @@ repointing role fields — no Python changes.
 | Parameter | Typical use | Notes |
 |-----------|-------------|-------|
 | `_type` | `nim` or `openai` | Provider plugin |
-| `model_name` | required | e.g. `nvidia/nemotron-3-super-120b-a12b` |
+| `model_name` | required | e.g. `nvidia/nemotron-3-ultra-550b-a55b` |
 | `base_url` | NIM / compatible endpoint | Set explicitly for hosted NIM |
 | `api_key` | optional | Falls back to `NVIDIA_API_KEY` for NIM |
 | `temperature`, `top_p`, `max_tokens` | per role | See role table in configuration-reference |
@@ -165,8 +161,8 @@ and feature guides under `docs/source/customization/`.
 
 | `_type` | Key options to tune | Doc anchor |
 |---------|---------------------|------------|
-| `intent_classifier` | `llm`, `tools`, `llm_timeout`, `verbose` | `configuration-reference.md` § `intent_classifier` |
-| `clarifier_agent` | `llm`, `max_turns`, `exclude_tools`, `verbose` | § `clarifier_agent` |
+| `intent_classifier` | `llm`, `tools`, `llm_timeout` | `configuration-reference.md` § `intent_classifier` |
+| `clarifier_agent` | `llm`, `max_turns`, `exclude_tools` | § `clarifier_agent` |
 | `shallow_research_agent` | `llm`, `max_llm_turns`, `max_tool_iterations`, `exclude_tools` | § `shallow_research_agent` |
 | `deep_research_agent` | role LLMs, `exclude_tools`, `enable_source_router`, `domain_catalog_path`, `enable_citation_verification`, `skills`, `sandbox`, concurrency caps | § `deep_research_agent` |
 
@@ -178,6 +174,8 @@ and feature guides under `docs/source/customization/`.
 | `shallow_research_agent` | always | `llm` |
 | `deep_research_agent` | always | `orchestrator_llm`, `planner_llm`, `researcher_llm`, `writer_llm`, `source_router_llm` |
 | `clarifier_agent` | `workflow.enable_clarifier: true` | `llm` |
+| `data_science_agent` | direct `data_science_workflow` | `llm` |
+| `data_science_hybrid_adapter` | `workflow.hybrid_research_agent` routes catalog-supported requests to DS | configured `agent` function reference |
 
 ---
 
@@ -186,15 +184,26 @@ and feature guides under `docs/source/customization/`.
 ```yaml
 workflow:
   _type: chat_deepresearcher_agent
+  hybrid_research_agent: data_science_hybrid_adapter
   enable_escalation: true       # false → shallow only
   enable_clarifier: true
   use_async_deep_research: true   # needs general.front_end
   max_history: 20
   checkpoint_db: ${AIQ_CHECKPOINT_DB:-./checkpoints.db}
-  verbose: true
 ```
 
 Full defaults table: `configuration-reference.md` § `workflow`.
+
+For direct DS Agent development, use `_type: data_science_workflow` and define
+`data_science_agent`; the chat-only intent, shallow, and deep functions are not
+required in that profile.
+
+For product Hybrid routing, configure `intent_classifier` with
+`_type: context_aware_intent_router`, define `data_science_hybrid_adapter` with
+an `agent` reference to the DS function, and set
+`workflow.hybrid_research_agent` to the adapter. The adapter consumes the
+router's validated catalog context; direct DS evaluation continues to bypass
+both the router and adapter.
 
 ---
 
