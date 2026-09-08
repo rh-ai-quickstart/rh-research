@@ -78,10 +78,10 @@ AGENT_DIR = Path(__file__).parent
 """Path to the clarifier agent's directory, used for loading prompts."""
 
 DEFAULT_CLARIFICATION_PROMPT = (
+    "/no_think\n\n"
     "You are a helpful research clarification assistant. "
     "Ask focused questions to understand the user's needs. "
-    "Respond concisely with only valid JSON, no explanation. "
-    'Format: {"needs_clarification": true/false, "clarification_question": "your question?" or null}'
+    'Respond with JSON: {"needs_clarification": true/false, "clarification_question": "your question?" or null}'
 )
 """Fallback prompt used when the prompt file cannot be loaded."""
 

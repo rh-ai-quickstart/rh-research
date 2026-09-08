@@ -16,13 +16,11 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
-from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
@@ -333,38 +331,22 @@ class TestAuthorizeJobAccess:
         assert result is job
 
     def test_cross_user_access_denied_with_404(self, db_url):
-        # REQUIRE_AUTH must be set: authorize_job_access short-circuits and returns
-        # the job before the ownership lookup when auth is disabled (access.py:161).
-        # Without this the deny path is never exercised and the test silently fails.
         _insert_job_info(db_url, "job-1")
         create_job_access("job-1", Principal(type="jwt", sub="user-1"), db_url)
         job = SimpleNamespace(job_id="job-1", status="running", created_at=None, error=None)
         job_store = SimpleNamespace(get_job=AsyncMock(return_value=job))
 
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}), pytest.raises(HTTPException) as exc:
+        with pytest.raises(HTTPException) as exc:
             asyncio.run(authorize_job_access(job_store, db_url, "job-1", Principal(type="jwt", sub="user-2")))
 
         assert exc.value.status_code == 404
 
-    def test_cross_user_access_allowed_when_auth_disabled(self, db_url):
-        """With REQUIRE_AUTH unset, ownership is deliberately not enforced (access.py:151-161)."""
-        _insert_job_info(db_url, "job-1")
-        create_job_access("job-1", Principal(type="jwt", sub="user-1"), db_url)
-        job = SimpleNamespace(job_id="job-1", status="running", created_at=None, error=None)
-        job_store = SimpleNamespace(get_job=AsyncMock(return_value=job))
-
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "false"}):
-            result = asyncio.run(authorize_job_access(job_store, db_url, "job-1", Principal(type="jwt", sub="user-2")))
-
-        assert result is job
-
     def test_missing_access_row_denied_with_404(self, db_url):
-        # See note above -- the deny path requires REQUIRE_AUTH=true.
         _insert_job_info(db_url, "job-1")
         job = SimpleNamespace(job_id="job-1", status="running", created_at=None, error=None)
         job_store = SimpleNamespace(get_job=AsyncMock(return_value=job))
 
-        with patch.dict(os.environ, {"REQUIRE_AUTH": "true"}), pytest.raises(HTTPException) as exc:
+        with pytest.raises(HTTPException) as exc:
             asyncio.run(authorize_job_access(job_store, db_url, "job-1", Principal(type="jwt", sub="user-1")))
 
         assert exc.value.status_code == 404

@@ -238,7 +238,7 @@ dev = [
     "aiq-debug",
 ]
 [tool.uv]
-prerelease = "if-necessary"
+prerelease = "allow"
 override-dependencies = [
     "authlib>=1.6.11,<2",
     "cryptography>=46.0.6,<47",
