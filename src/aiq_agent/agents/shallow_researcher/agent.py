@@ -46,6 +46,7 @@ from aiq_agent.common.citation_verification import SourceEntry
 from aiq_agent.common.citation_verification import SourceRegistry
 from aiq_agent.common.citation_verification import extract_sources_from_tool_result
 from aiq_agent.common.citation_verification import get_session_registry
+from aiq_agent.common.citation_verification import is_tool_error_output
 from aiq_agent.common.citation_verification import sanitize_report
 from aiq_agent.common.citation_verification import verify_citations
 from aiq_agent.common.logging_utils import log_content_metadata
@@ -613,13 +614,22 @@ class ShallowResearcherAgent:
             generated_answer = sanitize_report(content).sanitized_report if content is not None else None
             # Red Hat: capture tool-level errors so the user-facing message can
             # distinguish "the endpoint failed" from "there were no results".
-            # Upstream's reason enum cannot express that difference.
-            tool_errors = []
-            for msg in validated_result.get("messages", []):
-                if getattr(msg, "type", None) == "tool":
-                    tool_content = str(getattr(msg, "content", ""))
-                    if "error" in tool_content.lower():
-                        tool_errors.append(tool_content.strip())
+            # Upstream's reason enum cannot express that difference. A tool
+            # message counts as an error when LangChain marked it status="error"
+            # or its content is a provider error shape; prose that merely
+            # mentions "error" and plain "no results" statuses do not.
+            tool_errors = [
+                str(getattr(msg, "content", "")).strip()
+                for msg in validated_result.get("messages", [])
+                if getattr(msg, "type", None) == "tool"
+                and (getattr(msg, "status", None) == "error" or is_tool_error_output(str(getattr(msg, "content", ""))))
+            ]
+            if tool_errors:
+                logger.warning(
+                    "Shallow research: %d source tool call(s) returned errors (%s)",
+                    len(tool_errors),
+                    log_content_metadata("\n".join(tool_errors)),
+                )
             if self.enforce_citations or generated_answer is None:
                 raise EmptySourceRegistryError(
                     "shallow research",

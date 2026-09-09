@@ -150,6 +150,45 @@ def classify_empty_source_registry_reason(
     return EmptySourceRegistryReason.NO_SOURCE_RESULTS
 
 
+# Match permissive HTTP(S) candidates; also used to redact URLs from tool error summaries.
+_HTTP_URL_CANDIDATE_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+
+_TOOL_ERROR_SUMMARY_LIMIT = 160
+_TOOL_ERROR_MAX_SHOWN = 3
+_NO_RESULTS_STATUS_RE = re.compile(r"(?:^|\s)search returned no results$")
+
+
+def is_tool_error_output(content: str) -> bool:
+    """Return whether a tool result is a provider error (as opposed to evidence or "no results").
+
+    Red Hat helper for ``EmptySourceRegistryError.tool_errors``. Reuses upstream's
+    ``is_non_citable_status_output`` so the error shapes stay in one place, but
+    excludes its "search returned no results" case: an empty result set is not an
+    endpoint failure and must not trigger the quota/outage remediation.
+    """
+    if not isinstance(content, str):
+        return False
+    normalized = re.sub(r"\s+", " ", content.strip()).rstrip(".").lower()
+    if not normalized or _NO_RESULTS_STATUS_RE.search(normalized):
+        return False
+    return is_non_citable_status_output(content)
+
+
+def summarize_tool_error(raw: str, limit: int = _TOOL_ERROR_SUMMARY_LIMIT) -> str:
+    """Reduce a raw tool error payload to one safe line for a user-facing message.
+
+    Keeps only the first non-empty line, collapses whitespace, replaces URLs
+    (which can carry internal hostnames or tokens) with ``<url>`` and truncates.
+    The raw text stays on the exception for server-side logging.
+    """
+    first_line = next((line for line in str(raw).splitlines() if line.strip()), "")
+    text = re.sub(r"\s+", " ", first_line).strip()
+    text = _HTTP_URL_CANDIDATE_RE.sub("<url>", text)
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "\u2026"
+    return text
+
+
 class EmptySourceRegistryError(Exception):
     """Raised when no sources were captured during research.
 
@@ -185,21 +224,39 @@ class EmptySourceRegistryError(Exception):
         )
 
     @property
+    def tool_error_summaries(self) -> list[str]:
+        """Sanitised, de-duplicated one-line summaries of ``tool_errors`` (at most a few)."""
+        seen: list[str] = []
+        for raw in self.tool_errors:
+            summary = summarize_tool_error(raw)
+            if summary and summary not in seen:
+                seen.append(summary)
+        return seen
+
+    @property
     def public_response(self) -> str:
         """Return the generated answer, when present, with remediation."""
-        # Red Hat: tool errors take precedence -- an endpoint failure needs a
-        # different remediation than "no results", and upstream's reason enum
-        # cannot distinguish them.
+        # Red Hat: a provider error needs a different remediation than "no
+        # results", and upstream's reason enum cannot distinguish them. Only
+        # sanitised one-line summaries reach the user; raw payloads may carry
+        # internal hostnames or credentials and stay server-side.
         if self.tool_errors:
-            return (
-                "The search tools encountered errors and could not complete your request. "
-                "Details: " + "; ".join(self.tool_errors[:3]) + ". "
-                "This may be due to an API quota limit, a temporary service outage, "
-                "or a misconfigured API key. Please check your API keys and try again later."
+            summaries = self.tool_error_summaries
+            shown = summaries[:_TOOL_ERROR_MAX_SHOWN]
+            details = "; ".join(shown)
+            if len(summaries) > len(shown):
+                details += f"; and {len(summaries) - len(shown)} more"
+            remediation = (
+                "The search tools returned errors and could not complete your request"
+                + (f" ({details})" if details else "")
+                + ". This may be an API quota limit, a temporary service outage, or a "
+                "misconfigured API key. Check the API keys and try again later."
             )
+        else:
+            remediation = self.public_message
         if self.generated_answer and self.generated_answer.strip():
-            return f"{self.generated_answer.rstrip()}\n\n{self.public_message}"
-        return self.public_message
+            return f"{self.generated_answer.rstrip()}\n\n{remediation}"
+        return remediation
 
 
 _TRACKING_PARAMS = frozenset(
@@ -218,7 +275,6 @@ _TRACKING_PARAMS = frozenset(
 # Match permissive HTTP(S) candidates, then remove only punctuation and closing
 # delimiters that are not part of the URL. In particular, a trailing ``)`` is
 # valid when it balances an earlier ``(``, as in Wikipedia article URLs.
-_HTTP_URL_CANDIDATE_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _HTTP_MARKDOWN_LINK_CANDIDATE_RE = re.compile(
     r"^https?://[^\s<>\"']+?\]\((?P<target>https?://[^\s<>\"']+)\)[.,;]*$",
     re.IGNORECASE,

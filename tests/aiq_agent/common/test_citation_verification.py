@@ -31,8 +31,10 @@ from aiq_agent.common.citation_verification import classify_empty_source_registr
 from aiq_agent.common.citation_verification import clean_extracted_url
 from aiq_agent.common.citation_verification import extract_http_urls
 from aiq_agent.common.citation_verification import extract_sources_from_tool_result
+from aiq_agent.common.citation_verification import is_tool_error_output
 from aiq_agent.common.citation_verification import register_source_parser
 from aiq_agent.common.citation_verification import sanitize_report
+from aiq_agent.common.citation_verification import summarize_tool_error
 from aiq_agent.common.citation_verification import verify_citations
 
 
@@ -1562,6 +1564,89 @@ class TestEmptySourceRegistryError:
     def test_is_exception(self):
         with pytest.raises(EmptySourceRegistryError):
             raise EmptySourceRegistryError("test")
+
+    # -- Red Hat: tool_errors ------------------------------------------------
+
+    def test_no_tool_errors_keeps_upstream_response(self):
+        err = EmptySourceRegistryError("shallow research", generated_answer="Draft")
+        assert err.tool_errors == []
+        assert err.public_response == f"Draft\n\n{err.public_message}"
+
+    def test_tool_errors_keep_the_partial_answer(self):
+        err = EmptySourceRegistryError(
+            "shallow research", generated_answer="Useful partial", tool_errors=["Error: quota exceeded"]
+        )
+        response = err.public_response
+        assert response.startswith("Useful partial\n\n")
+        assert "Error: quota exceeded" in response
+        assert "API quota limit" in response
+        assert err.public_message not in response
+
+    def test_tool_errors_without_answer(self):
+        err = EmptySourceRegistryError("shallow research", tool_errors=["Error: 503 upstream"])
+        assert err.public_response.startswith("The search tools returned errors")
+        assert "(Error: 503 upstream)" in err.public_response
+
+    def test_tool_error_details_are_sanitised(self):
+        raw = (
+            "Error: Web search failed - ConnectError http://vllm.internal:8000/v1 timed out\n"
+            "Traceback (most recent call last):\n  secret=abc"
+        )
+        err = EmptySourceRegistryError("shallow research", tool_errors=[raw])
+        assert err.tool_error_summaries == ["Error: Web search failed - ConnectError <url> timed out"]
+        assert "vllm.internal" not in err.public_response
+        assert "Traceback" not in err.public_response
+        assert "secret" not in err.public_response
+
+    def test_tool_error_details_are_deduplicated_capped_and_counted(self):
+        errors = ["Error: a", "Error: a", "Error: b", "Error: c", "Error: d", "Error: e"]
+        err = EmptySourceRegistryError("shallow research", tool_errors=errors)
+        assert err.tool_error_summaries == ["Error: a", "Error: b", "Error: c", "Error: d", "Error: e"]
+        assert "(Error: a; Error: b; Error: c; and 2 more)" in err.public_response
+        assert err.tool_errors == errors  # raw payloads retained for server-side logging
+
+
+class TestToolErrorHelpers:
+    """Red Hat helpers behind EmptySourceRegistryError.tool_errors."""
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Error: Web search failed - ConnectError",
+            "Error: Search failed after all retries",
+            "Error 503: upstream unavailable",
+            "Search failed with status 429",
+            '{"error": {"message": "quota exceeded"}}',
+            '{"status": 500}',
+        ],
+    )
+    def test_provider_errors_are_detected(self, content):
+        assert is_tool_error_output(content) is True
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Search returned no results",
+            "Web search returned no results.",
+            "Results: Handling error codes in HTTP APIs - a practical guide https://example.com/errors",
+            "The error rate dropped 40% after the migration [1]",
+            "",
+            "   ",
+        ],
+    )
+    def test_evidence_and_no_results_are_not_errors(self, content):
+        assert is_tool_error_output(content) is False
+
+    def test_non_string_is_not_an_error(self):
+        assert is_tool_error_output(None) is False  # type: ignore[arg-type]
+
+    def test_summarize_keeps_first_line_redacts_urls_and_truncates(self):
+        raw = "  Error: failed https://internal.corp/api?token=abc  \nsecond line"
+        assert summarize_tool_error(raw) == "Error: failed <url>"
+        long = "Error: " + "x" * 400
+        summary = summarize_tool_error(long)
+        assert len(summary) == 160 and summary.endswith("\u2026")
+        assert summarize_tool_error("\n\n") == ""
 
 
 # ---------------------------------------------------------------------------
