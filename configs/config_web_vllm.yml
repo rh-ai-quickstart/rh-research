@@ -62,18 +62,27 @@ general:
 # Startup validation (validate_llm_endpoints) warns when max_tokens exceeds the
 # endpoint's reported context window. See docs/source/customization/
 # vllm-decisions.md (Decision 6) for the full rationale and two case studies.
+#
+# request_timeout / max_retries: without request_timeout the OpenAI SDK applies
+# its own 600 s read timeout, and OpenAIModelConfig.max_retries defaults to 10,
+# so one slow writer call (16k tokens at self-hosted speeds can take 20+ min)
+# times out and is retried up to 11 times, past the 3600 s deep-research cap.
+# The defaults below are sized per role from max_tokens at ~10-20 tok/s; raise
+# via env for slower endpoints. max_retries 2 = the SDK default; NAT's own
+# num_retries (5, on 429/5xx) still applies on top.
+#   VLLM_INTENT_TIMEOUT VLLM_RESEARCHER_TIMEOUT VLLM_ORCHESTRATOR_TIMEOUT
+#   VLLM_WRITER_TIMEOUT VLLM_SUMMARY_TIMEOUT
 # ===========================================================================
 
 llms:
   # Intent classification — fast, small model
-  # Set VLLM_INTENT_BASE_URL alongside VLLM_BASE_URL (same value unless intent
-  # classification is served by a separate vLLM instance). NAT's env expansion
-  # does not support nested ${VAR:-${OTHER}} defaults, so this cannot fall
-  # back to VLLM_BASE_URL automatically — leaving it unset uses localhost.
+  # Follows VLLM_BASE_URL unless VLLM_INTENT_BASE_URL is set (only needed when
+  # intent classification is served by a separate vLLM instance). NAT expands
+  # nested ${VAR:-${OTHER:-default}} defaults.
   intent_llm:
     _type: openai
     model_name: ${VLLM_INTENT_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
-    base_url: ${VLLM_INTENT_BASE_URL:-http://localhost:8000}/v1
+    base_url: ${VLLM_INTENT_BASE_URL:-${VLLM_BASE_URL:-http://localhost:8000}}/v1
     api_key: ${VLLM_API_KEY:-no-key}
     temperature: 0.5
     top_p: 0.9
@@ -84,6 +93,8 @@ llms:
     # triggers and the logs look clean. Reasoning models spend part of this budget
     # on hidden reasoning tokens before emitting any JSON.
     max_tokens: ${VLLM_INTENT_MAX_TOKENS:-4096}
+    request_timeout: ${VLLM_INTENT_TIMEOUT:-120}
+    max_retries: 2
     # Reasoning control. Default null = no directive, which is safe on ANY model.
     # VLLM_THINKING=false injects /no_think (Nemotron only — NAT's GatedFieldMixin
     # raises on other models). Provided as an escape hatch, NOT a performance fix:
@@ -101,6 +112,8 @@ llms:
     temperature: 0.1
     top_p: 0.3
     max_tokens: ${VLLM_RESEARCHER_MAX_TOKENS:-16384}
+    request_timeout: ${VLLM_RESEARCHER_TIMEOUT:-900}
+    max_retries: 2
     thinking: ${VLLM_THINKING:-null}
 
   # Deep research orchestrator and planner — large context model
@@ -112,6 +125,8 @@ llms:
     temperature: 1.0
     top_p: 1.0
     max_tokens: ${VLLM_ORCHESTRATOR_MAX_TOKENS:-128000}
+    request_timeout: ${VLLM_ORCHESTRATOR_TIMEOUT:-1800}
+    max_retries: 2
     thinking: ${VLLM_THINKING:-null}
 
   # Final report synthesis (deep research writer) and report follow-up Q&A.
@@ -126,6 +141,8 @@ llms:
     temperature: 0.7
     top_p: 0.7
     max_tokens: ${VLLM_WRITER_MAX_TOKENS:-16384}
+    request_timeout: ${VLLM_WRITER_TIMEOUT:-1800}
+    max_retries: 2
     thinking: ${VLLM_THINKING:-null}
 
   # Document summarization — small, fast model
@@ -140,6 +157,8 @@ llms:
     # where 100 tokens is consumed before any content is emitted. A truncated
     # summary is stored silently as an empty string.
     max_tokens: ${VLLM_SUMMARY_MAX_TOKENS:-512}
+    request_timeout: ${VLLM_SUMMARY_TIMEOUT:-120}
+    max_retries: 2
     thinking: ${VLLM_THINKING:-null}
 
 functions:
@@ -205,7 +224,6 @@ functions:
     _type: intent_classifier
     llm: intent_llm
     # tools: omitted -> inherits all from data_source_registry
-    verbose: true
     # Per-call LLM timeout (seconds) for intent classification. Default 90; raise
     # via env for slow self-hosted endpoints (e.g. a large quantized model on
     # modest hardware). This is the field IntentClassifierConfig actually reads.
@@ -220,7 +238,6 @@ functions:
     # planning moved inside the deep-research workflow. They are inert on 2.1 too.
     max_turns: 3
     log_response_max_chars: 2000
-    verbose: true
 
   shallow_research_agent:
     _type: shallow_research_agent
@@ -238,16 +255,21 @@ functions:
     researcher_llm: researcher_llm
     planner_llm: orchestrator_llm
     writer_llm: writer_llm
+    # Source routing uses the orchestrator model, as upstream does; without this
+    # the router falls back to the provider default role.
+    source_router_llm: orchestrator_llm
     # tools: omitted -> inherits all from data_source_registry
     exclude_tools:                     # Remove basic variant; deep uses advanced_web_search_tool
       - web_search_tool
+    # Explicit rather than inherited (decision D9): the upstream default flipped
+    # to true in 2.2 and this config must not change behaviour silently.
+    enable_citation_verification: true
     # NOTE: no max_loops or verbose here. Neither is a DeepResearchAgentConfig
     # field (verbose was removed upstream in 59aa926), and the schema sets
     # extra="forbid", so any stray key is a hard load error.
 
 workflow:
   _type: chat_deepresearcher_agent
-  verbose: true
   enable_escalation: true
   enable_clarifier: true
   use_async_deep_research: true

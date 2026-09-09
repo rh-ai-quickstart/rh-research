@@ -12,6 +12,7 @@ import pytest
 from aiq_agent.common.config_validation import _extract_env_var
 from aiq_agent.common.config_validation import _get_llm_api_key_requirements
 from aiq_agent.common.config_validation import _is_local_or_private_endpoint
+from aiq_agent.common.config_validation import _resolve_config_value
 from aiq_agent.common.config_validation import validate_llm_configs
 from aiq_agent.common.config_validation import validate_llm_endpoints
 
@@ -56,6 +57,10 @@ class TestIsLocalOrPrivateEndpoint:
     )
     def test_public_endpoints(self, base_url):
         assert _is_local_or_private_endpoint({"base_url": base_url}) is False
+
+    def test_nested_env_default_with_local_inner_default(self):
+        nested = "${VLLM_INTENT_BASE_URL:-${VLLM_BASE_URL:-http://localhost:8000}}/v1"
+        assert _is_local_or_private_endpoint({"base_url": nested}) is True
 
     def test_env_var_with_local_default(self):
         config = {"base_url": "${VLLM_BASE_URL:-http://localhost:8000}/v1"}
@@ -440,3 +445,37 @@ class TestValidateLlmEndpoints:
         with patch("aiq_agent.common.config_validation._probe_endpoint", mock_probe):
             warnings = await validate_llm_endpoints(config)
         assert not any("not found" in w for w in warnings), warnings
+
+
+class TestResolveConfigValue:
+    """_resolve_config_value must see exactly what NAT's loader sees."""
+
+    NESTED = "${VLLM_INTENT_BASE_URL:-${VLLM_BASE_URL:-http://localhost:8000}}/v1"
+
+    def test_plain_default_with_suffix(self, monkeypatch):
+        monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+        assert _resolve_config_value("${VLLM_BASE_URL:-http://localhost:8000}/v1") == "http://localhost:8000/v1"
+
+    def test_plain_env_overrides_default(self, monkeypatch):
+        monkeypatch.setenv("VLLM_BASE_URL", "http://spark:8000")
+        assert _resolve_config_value("${VLLM_BASE_URL:-http://localhost:8000}/v1") == "http://spark:8000/v1"
+
+    def test_nested_default_falls_through_to_inner_default(self, monkeypatch):
+        monkeypatch.delenv("VLLM_INTENT_BASE_URL", raising=False)
+        monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+        assert _resolve_config_value(self.NESTED) == "http://localhost:8000/v1"
+
+    def test_nested_default_follows_inner_variable(self, monkeypatch):
+        monkeypatch.delenv("VLLM_INTENT_BASE_URL", raising=False)
+        monkeypatch.setenv("VLLM_BASE_URL", "http://spark:8000")
+        assert _resolve_config_value(self.NESTED) == "http://spark:8000/v1"
+
+    def test_nested_default_outer_variable_wins(self, monkeypatch):
+        monkeypatch.setenv("VLLM_INTENT_BASE_URL", "http://intent:9000")
+        monkeypatch.setenv("VLLM_BASE_URL", "http://spark:8000")
+        assert _resolve_config_value(self.NESTED) == "http://intent:9000/v1"
+
+    def test_non_string_values(self):
+        assert _resolve_config_value(None) == ""
+        assert _resolve_config_value(8000) == "8000"
+        assert _resolve_config_value("literal") == "literal"

@@ -20,6 +20,8 @@ import os
 import re
 from typing import Any
 
+from nat.utils.io.yaml_tools import _interpolate_variables
+
 logger = logging.getLogger(__name__)
 
 # Mapping of LLM _type to required API key environment variable names
@@ -167,18 +169,14 @@ DEEP_RESEARCH_MIN_CONTEXT_TOKENS = 32_768
 def _resolve_config_value(raw: str) -> str:
     """Resolve a config value that may contain ${VAR:-default} syntax.
 
-    Handles values like '${VLLM_BASE_URL:-http://localhost:8000}/v1' where
-    there is text after the env var substitution block.
+    Delegates to NAT's own interpolation so the probe sees exactly what the
+    loader sees, including nested defaults such as
+    '${VLLM_INTENT_BASE_URL:-${VLLM_BASE_URL:-http://localhost:8000}}/v1'
+    and text after the substitution block.
     """
     if not isinstance(raw, str):
         return str(raw) if raw is not None else ""
-    match = re.match(r"(\$\{[^}]+\})(.*)", raw)
-    if match:
-        env_part, suffix = match.group(1), match.group(2)
-        env_var, default = _extract_env_var(env_part)
-        if env_var:
-            return os.getenv(env_var, default or "") + suffix
-    return raw
+    return str(_interpolate_variables(raw))
 
 
 def _resolve_base_url(llm_config: dict[str, Any]) -> str | None:
