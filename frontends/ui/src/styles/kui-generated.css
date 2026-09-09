@@ -8502,7 +8502,7 @@
 :host {
   --color-orange-400: #ff8b1a;
   --color-yellow-50: #fefce8;
-  --color-blue-50: #fef2f2;
+  --color-blue-50: #eff6ff;
   --text-xs: 0.75rem;
   --text-xs--line-height: calc(1/0.75);
   --text-sm: 0.875rem;
@@ -8520,7 +8520,7 @@
   :host {
     --color-orange-400: lab(70.0429% 42.5156 75.8207);
     --color-yellow-50: lab(98.6846% -1.79055 9.7766);
-    --color-blue-50: lab(96.5% 2.5 5.0);
+    --color-blue-50: lab(96.492% -1.14644 -5.11479);
   }
 }
 *,
@@ -10609,17 +10609,17 @@ html {
     --color-teal-800: #033831;
     --color-teal-900: #022723;
     --color-teal-950: #011a19;
-    --color-blue-050: #fde0e0;
-    --color-blue-100: #fcc;
-    --color-blue-200: #f99;
-    --color-blue-300: #EE0000;
-    --color-blue-400: #DD0000;
-    --color-blue-500: #CC0000;
-    --color-blue-600: #A30000;
-    --color-blue-700: #8F0000;
-    --color-blue-800: #600;
-    --color-blue-900: #400;
-    --color-blue-950: #210000;
+    --color-blue-050: #cbf5ff;
+    --color-blue-100: #ace;
+    --color-blue-200: #7cd7fe;
+    --color-blue-300: #10b1fb;
+    --color-blue-400: #008af9;
+    --color-blue-500: #0074df;
+    --color-blue-600: #0060c7;
+    --color-blue-700: #0046a4;
+    --color-blue-800: #002781;
+    --color-blue-900: #002050;
+    --color-blue-950: #00112c;
     --color-purple-050: #fae9ff;
     --color-purple-100: #f9d4ff;
     --color-purple-200: #f0b9fd;

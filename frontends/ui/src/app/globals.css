@@ -70,7 +70,7 @@
   --border-color-interaction-primary-base: var(--color-green-300);
   --text-color-brand: var(--color-brand);
   --border-color-brand: var(--color-brand);
-  --color-accent-line: #4e8500;
+  --color-accent-line: var(--color-brand);
   --background-color-surface-base: #f7f7f8;
   --background-color-surface-navigation: #f7f7f8;
   --background-color-surface-overlay: #efeff1;
@@ -95,7 +95,7 @@
   --border-color-interaction-primary-base: var(--color-green-300);
   --text-color-brand: var(--color-brand);
   --border-color-brand: var(--color-brand);
-  --color-accent-line: #8fd400;
+  --color-accent-line: var(--color-brand);
   --background-color-surface-base: #0a0a0b;
   --background-color-surface-navigation: #0a0a0b;
   --background-color-surface-overlay: #1b1b1f;
@@ -135,9 +135,67 @@
   --background-color-accent-blue-subtle-hover: var(--color-green-700);
   --background-color-accent-blue-subtle-selected: var(--color-green-600);
   --border-color-accent-blue: var(--color-green-300);
-  --text-color-accent-blue: var(--color-green-300);
+  --text-color-accent-blue: var(--color-green-200);
   --text-color-accent-blue-strong: var(--color-green-200);
   --text-color-accent-blue-subtle: var(--color-green-200);
+}
+
+/* =============================================================================
+   Semantic "success" stays green
+   -----------------------------------------------------------------------------
+   The palette remap above turns every --color-green-* step red so that KUI's
+   primary/brand tokens paint Red Hat red. KUI ALSO derives its success and
+   accent-green tokens from that same palette, so without this block "success"
+   renders #CC0000 and cannot be told apart from "danger" (connected vs error,
+   completed vs failed). Re-point those semantic tokens at a real green scale.
+   Values are PatternFly-derived; contrast checked in both themes (text >= 4.5:1).
+   ============================================================================= */
+:root {
+  --rh-green-025: #f3faf2;
+  --rh-green-050: #e4f5dc;
+  --rh-green-100: #d1f1bb;
+  --rh-green-200: #afdc8f;
+  --rh-green-300: #63993d;
+  --rh-green-400: #3d7317;
+  --rh-green-500: #2f5b10;
+  --rh-green-600: #204d00;
+  --rh-green-700: #1a3f00;
+  --rh-green-800: #122d00;
+  --rh-green-900: #0e2301;
+  --rh-green-950: #081400;
+}
+:where(:root, .rh-light, .nv-light) {
+  --background-color-feedback-success: var(--rh-green-025);
+  --border-color-feedback-success: var(--rh-green-400);
+  --text-color-feedback-success: var(--rh-green-400);
+  --background-color-accent-green: var(--rh-green-025);
+  --background-color-accent-green-hover: var(--rh-green-025);
+  --background-color-accent-green-selected: var(--rh-green-050);
+  --background-color-accent-green-strong: var(--rh-green-800);
+  --background-color-accent-green-subtle: var(--rh-green-100);
+  --background-color-accent-green-subtle-hover: var(--rh-green-200);
+  --background-color-accent-green-subtle-selected: var(--rh-green-600);
+  --border-color-accent-green: var(--rh-green-700);
+  --text-color-accent-green: var(--rh-green-700);
+  --text-color-accent-green-strong: var(--rh-green-700);
+  --text-color-accent-green-subtle: var(--rh-green-200);
+}
+:is(.rh-dark, .nv-dark) {
+  --background-color-feedback-success: var(--rh-green-950);
+  --border-color-feedback-success: var(--rh-green-400);
+  --text-color-feedback-success: var(--rh-green-300);
+  --text-color-feedback-success-inverse: var(--rh-green-300);
+  --background-color-accent-green: var(--rh-green-900);
+  --background-color-accent-green-hover: var(--rh-green-900);
+  --background-color-accent-green-selected: var(--rh-green-800);
+  --background-color-accent-green-strong: var(--rh-green-900);
+  --background-color-accent-green-subtle: var(--rh-green-900);
+  --background-color-accent-green-subtle-hover: var(--rh-green-800);
+  --background-color-accent-green-subtle-selected: var(--rh-green-600);
+  --border-color-accent-green: var(--rh-green-300);
+  --text-color-accent-green: var(--rh-green-300);
+  --text-color-accent-green-strong: var(--rh-green-200);
+  --text-color-accent-green-subtle: var(--rh-green-200);
 }
 
 /* =============================================================================
@@ -154,9 +212,9 @@
    than adding one: no `!important`, no universal selector, and `font-mono` works.
 
    These :root blocks are UNLAYERED and must stay BELOW the @import at the top of
-   this file. Tailwind's own token defaults are also unlayered, so this wins on
-   SOURCE ORDER, not on layering -- moving the imports below here silently reverts
-   it. (KUI's NVIDIA Sans declarations sit inside @layer base and lose to both.)
+   this file. KUI's font tokens sit inside @layer base and Tailwind's inside
+   @layer theme, so these unlayered declarations win on layering; keeping them
+   below the @import also keeps the source order unambiguous.
 
    Fonts are self-hosted rather than loaded from Google Fonts: they are Red Hat's
    own OFL-licensed families, and the Google request did not include Red Hat Mono
@@ -196,7 +254,8 @@ body {
   font-family: var(--font-sans);
 }
 
-h1, h2, h3, h4, h5, h6 {
+h1, h2, h3, h4, h5, h6,
+.nv-text--title-2xl, .nv-text--title-xl, .nv-text--title-lg {
   font-family: var(--font-display);
 }
 
@@ -1528,7 +1587,7 @@ button.thinking-phase-head:hover {
    separation, normal-vision floor, contrast) in BOTH modes -- do not hand-edit
    a hex without re-running it:
 
-     node scripts/validate_palette.js "<hex,...>" --mode light|dark
+     (the dataviz skill's palette checker; there is no script in this repo)
 
    Red Hat red deliberately leads slot 1: brand identity sits on the first
    series. Dark is a selected set of steps, not an automatic flip.
