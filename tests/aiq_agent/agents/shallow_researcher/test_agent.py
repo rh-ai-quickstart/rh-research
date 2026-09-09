@@ -57,6 +57,18 @@ def empty_web_search_tool(query: str) -> str:
     return "Search returned no results"
 
 
+@tool
+def failing_web_search_tool(query: str) -> str:
+    """Search the web but fail the way sources/* report provider errors."""
+    return "Error: Web search failed - ConnectError http://vllm.internal:8000/v1 timed out"
+
+
+@tool
+def error_prose_tool(query: str) -> str:
+    """Return evidence whose text merely mentions the word error."""
+    return "Results: Handling error codes in HTTP APIs - a practical guide"
+
+
 class TestShallowResearcherAgent:
     """Tests for the ShallowResearcherAgent class."""
 
@@ -982,6 +994,59 @@ class TestShallowResearcherSourceRegistryGating:
         assert sources[0].citation_key == "weather_observation_tool"
         assert sources[0].source_type == "tool_result"
         assert result.messages[-1].content.rstrip().endswith("[1] weather_observation_tool")
+
+    # -- Red Hat: tool_errors on EmptySourceRegistryError -------------------
+
+    @pytest.mark.asyncio
+    async def test_failing_source_tool_is_reported_as_tool_error(self, mock_llm_provider, mock_llm):
+        """A provider error string becomes tool_errors, sanitised in the public response."""
+        tool_call_response = AIMessage(
+            content="",
+            tool_calls=[{"name": "failing_web_search_tool", "args": {"query": "vLLM"}, "id": "1"}],
+        )
+        final_response = AIMessage(content="I could not retrieve any sources.")
+        mock_llm.ainvoke = AsyncMock(side_effect=[tool_call_response, final_response])
+
+        agent = ShallowResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[failing_web_search_tool],
+            enforce_citations=True,
+        )
+
+        state = ShallowResearchAgentState(messages=[HumanMessage(content="What is vLLM?")])
+        with pytest.raises(EmptySourceRegistryError) as excinfo:
+            await agent.run(state)
+
+        err = excinfo.value
+        assert err.tool_errors == ["Error: Web search failed - ConnectError http://vllm.internal:8000/v1 timed out"]
+        assert "The search tools returned errors" in err.public_response
+        assert "<url>" in err.public_response
+        assert "vllm.internal" not in err.public_response
+
+    @pytest.mark.asyncio
+    async def test_evidence_mentioning_error_is_not_a_tool_error(self, mock_llm_provider, mock_llm):
+        """Prose that contains the word "error" is evidence, not a provider failure."""
+        tool_call_response = AIMessage(
+            content="",
+            tool_calls=[{"name": "error_prose_tool", "args": {"query": "http errors"}, "id": "1"}],
+        )
+        final_response = AIMessage(content="HTTP error handling summary.")
+        mock_llm.ainvoke = AsyncMock(side_effect=[tool_call_response, final_response])
+
+        # Not declared as a data source, so its output is never captured and the
+        # registry stays empty; that isolates the tool_errors classification.
+        agent = ShallowResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[error_prose_tool],
+            enforce_citations=True,
+        )
+
+        state = ShallowResearchAgentState(messages=[HumanMessage(content="How are HTTP errors handled?")])
+        with pytest.raises(EmptySourceRegistryError) as excinfo:
+            await agent.run(state)
+
+        assert excinfo.value.tool_errors == []
+        assert "The search tools returned errors" not in excinfo.value.public_response
 
 
 class TestShallowResearcherSourceCaptureIntegration:
