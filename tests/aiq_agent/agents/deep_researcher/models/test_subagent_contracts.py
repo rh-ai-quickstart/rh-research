@@ -248,6 +248,44 @@ def test_research_notes_contract_accepts_evidence_judgment():
     assert notes.evidence_judgment.confidence == "high"
 
 
+def test_research_notes_contract_decodes_json_string_nested_fields():
+    notes = ResearchNotes.model_validate(
+        {
+            "query_topic": "CUDA vs OpenCL portability",
+            "target_components": '["programming_model"]',
+            "summary": "CUDA is NVIDIA-specific while OpenCL targets portability.",
+            "findings": [],
+            "gaps": [],
+            "sources": [],
+            "narrative_notes": '{"kept": "as text because the field is a string"}',
+            "language": "English",
+            "evidence_judgment": '{"relevance_score": 90, "confidence": "high", "rationale": "Direct coverage."}',
+        }
+    )
+
+    assert notes.target_components == ["programming_model"]
+    assert notes.narrative_notes == '{"kept": "as text because the field is a string"}'
+    assert notes.evidence_judgment is not None
+    assert notes.evidence_judgment.relevance_score == 90
+
+
+def test_research_notes_contract_rejects_invalid_json_string_nested_field():
+    with pytest.raises(ValidationError):
+        ResearchNotes.model_validate(
+            {
+                "query_topic": "CUDA vs OpenCL portability",
+                "target_components": ["programming_model"],
+                "summary": "Summary.",
+                "findings": [],
+                "gaps": [],
+                "sources": [],
+                "narrative_notes": "Notes.",
+                "language": "English",
+                "evidence_judgment": '{"relevance_score": 90, "confidence":',
+            }
+        )
+
+
 def test_evidence_judgment_contract_rejects_invalid_score():
     with pytest.raises(ValidationError):
         EvidenceJudgment.model_validate(
