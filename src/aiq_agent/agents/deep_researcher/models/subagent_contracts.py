@@ -15,14 +15,21 @@
 
 """Structured response contracts for deep researcher planning, research, and synthesis."""
 
+import json
+from types import UnionType
 from typing import Annotated
+from typing import Any
 from typing import ClassVar
 from typing import Literal
+from typing import Union
+from typing import get_args
+from typing import get_origin
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import StringConstraints
+from pydantic import model_validator
 
 from ..resource_limits import DEFAULT_MAX_RESEARCH_QUERIES
 
@@ -32,10 +39,45 @@ ToolName = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 ComponentId = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 
 
+def _accepts_str(annotation: Any) -> bool:
+    """Return True when a field annotation admits a plain string (through unions and Annotated)."""
+    if annotation is str:
+        return True
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _accepts_str(get_args(annotation)[0])
+    if origin is Union or origin is UnionType:
+        return any(_accepts_str(arg) for arg in get_args(annotation))
+    return False
+
+
 class _StrictContract(BaseModel):
     """Base model for structured response schemas."""
 
     model_config: ClassVar[ConfigDict] = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _decode_json_string_fields(cls, data: Any) -> Any:
+        """Decode nested objects that a serving stack returned as JSON strings.
+
+        Some OpenAI-compatible endpoints return nested tool-call arguments as JSON
+        strings. Without this, validation fails and the model resends the same output.
+        """
+        if not isinstance(data, dict):
+            return data
+        decoded = dict(data)
+        for name, field in cls.model_fields.items():
+            value = decoded.get(name)
+            if not isinstance(value, str) or _accepts_str(field.annotation):
+                continue
+            if value.lstrip()[:1] not in ("{", "["):
+                continue
+            try:
+                decoded[name] = json.loads(value)
+            except ValueError:
+                continue
+        return decoded
 
 
 class TaskAnalysis(_StrictContract):
