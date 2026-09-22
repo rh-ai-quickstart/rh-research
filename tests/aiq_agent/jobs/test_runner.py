@@ -2966,6 +2966,7 @@ class TestAsyncJobRunnerAgentFactory:
                 max_concurrent_source_tool_calls=None,
                 max_source_tool_batch_size=None,
                 resource_limits=None,
+                force_tool_choice=True,
             ):
                 self.llm_provider = llm_provider
                 self.tools = tools
@@ -2982,12 +2983,14 @@ class TestAsyncJobRunnerAgentFactory:
                 self.max_concurrent_source_tool_calls = max_concurrent_source_tool_calls
                 self.max_source_tool_batch_size = max_source_tool_batch_size
                 self.resource_limits = resource_limits
+                self.force_tool_choice = force_tool_choice
 
         fn_config = DeepResearchAgentConfig(
             orchestrator_llm="llm",
             domain_catalog_path="configs/domain_catalogs/deep_research_domain_catalog.yml",
             enable_source_router=False,
             enable_citation_verification=False,
+            force_tool_choice=False,
             skills=DeepResearchSkillsConfig(agents={"writer-agent": ("synthesis",)}),
             sandbox=DeepResearchSandboxConfig(app_name="async-aiq"),
             max_research_concurrency=2,
@@ -3029,6 +3032,7 @@ class TestAsyncJobRunnerAgentFactory:
         assert agent.max_source_tool_batch_size == 4
         assert agent.resource_limits is fn_config.resource_limits
         assert agent.resource_limits.max_source_tool_calls == 8
+        assert agent.force_tool_choice is False
 
     def test_create_agent_instance_passes_shallow_research_config(self):
         """Async workers pass shallow citation enforcement through the constructor."""
@@ -3507,6 +3511,7 @@ class TestAsyncJobRunnerAgentFactory:
                 max_concurrent_source_tool_calls=None,
                 max_source_tool_batch_size=None,
                 resource_limits=None,
+                force_tool_choice=True,
             ):
                 raise TypeError("internal constructor failure")
 

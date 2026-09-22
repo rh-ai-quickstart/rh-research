@@ -63,6 +63,7 @@ _DEEP_RESEARCH_AGENT_KWARGS = frozenset(
         "max_concurrent_source_tool_calls",
         "max_source_tool_batch_size",
         "resource_limits",
+        "force_tool_choice",
     }
 )
 _CONFIGURABLE_AGENT_KWARGS = frozenset({"config", "job_id"})
@@ -1288,6 +1289,7 @@ def _create_agent_instance(
             max_concurrent_source_tool_calls=fn_config.max_concurrent_source_tool_calls,
             max_source_tool_batch_size=fn_config.max_source_tool_batch_size,
             resource_limits=fn_config.resource_limits,
+            force_tool_choice=fn_config.force_tool_choice,
         )
 
     if _constructor_accepts_explicit_kwargs(agent_cls, _CONFIGURABLE_AGENT_KWARGS):

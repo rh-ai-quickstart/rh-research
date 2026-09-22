@@ -19,6 +19,12 @@ Tested configurations for serving open models with vLLM on the AI-Q Blueprint. E
 
 All recipes use `configs/config_web_vllm.yml` which routes all LLMs through OpenAI-compatible endpoints.
 
+### Forced tool choice
+
+The deep researcher's structured outputs (source routing, plan, research notes) use LangChain's tool strategy, which sends `tool_choice: "required"`. vLLM enforces it with a grammar. On vLLM 0.27.1 the model can run to `max_tokens` on every such turn. On vLLM 0.18 the stream sends no chunks while the tool call is generated. On an OpenShift AI deployment the idle connection was dropped after about 50 s.
+
+`config_web_vllm.yml` sets `force_tool_choice: false` on `deep_research_agent`, so these calls send `"auto"` instead. The structured-output fallback already accepts a text answer. Leave it at the default `true` for NIM.
+
 ---
 
 ## Nemotron-3-Nano-30B-A3B (BF16)

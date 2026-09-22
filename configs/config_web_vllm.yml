@@ -264,6 +264,9 @@ functions:
     # Explicit rather than inherited (decision D9): the upstream default flipped
     # to true in 2.2 and this config must not change behaviour silently.
     enable_citation_verification: true
+    # vLLM enforces a forced tool choice with a grammar that can stall the stream or run to
+    # max_tokens. Send "auto" for structured outputs instead. See docs vllm-recipes.md.
+    force_tool_choice: false
     # NOTE: no max_loops or verbose here. Neither is a DeepResearchAgentConfig
     # field (verbose was removed upstream in 59aa926), and the schema sets
     # extra="forbid", so any stray key is a hard load error.
