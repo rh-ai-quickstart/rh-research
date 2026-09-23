@@ -123,6 +123,21 @@ class DeepResearchAgentConfig(FunctionBaseConfig, name="deep_research_agent"):
         default_factory=DeepResearchResourceLimits,
         description="Hard per-job limits for request, plan, notes, source calls, and execution time.",
     )
+    citation_repair_timeout: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Seconds allowed for the one-shot repair of a final report that came back without citations. "
+            "Raise it for slower self-hosted endpoints."
+        ),
+    )
+    force_tool_choice: bool = Field(
+        default=True,
+        description=(
+            "Send the forced tool choice LangChain uses for structured output. Set false for vLLM-served "
+            "models, where a forced choice can stall the stream or run to max_tokens; 'auto' is sent instead."
+        ),
+    )
 
     @field_validator("skills", mode="before")
     @classmethod
@@ -254,6 +269,8 @@ async def deep_research_agent(config: DeepResearchAgentConfig, builder: Builder)
         max_concurrent_source_tool_calls=config.max_concurrent_source_tool_calls,
         max_source_tool_batch_size=config.max_source_tool_batch_size,
         resource_limits=config.resource_limits,
+        force_tool_choice=config.force_tool_choice,
+        citation_repair_timeout=config.citation_repair_timeout,
     )
 
     async def _run(state: DeepResearchAgentState) -> DeepResearchAgentState:
@@ -292,6 +309,8 @@ async def deep_research_agent(config: DeepResearchAgentConfig, builder: Builder)
                     max_concurrent_source_tool_calls=config.max_concurrent_source_tool_calls,
                     max_source_tool_batch_size=config.max_source_tool_batch_size,
                     resource_limits=config.resource_limits,
+                    force_tool_choice=config.force_tool_choice,
+                    citation_repair_timeout=config.citation_repair_timeout,
                 )
                 owns_active_agent = True
 

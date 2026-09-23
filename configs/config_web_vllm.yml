@@ -248,6 +248,9 @@ functions:
     verbose: true
     max_llm_turns: 10
     max_tool_iterations: 5
+    # The one-shot citation repair regenerates the answer with citations; the 60 s default
+    # is short for self-hosted endpoints. Only used when enforce_citations is true.
+    citation_repair_timeout: ${VLLM_CITATION_REPAIR_TIMEOUT:-240}
 
   deep_research_agent:
     _type: deep_research_agent
@@ -264,6 +267,12 @@ functions:
     # Explicit rather than inherited (decision D9): the upstream default flipped
     # to true in 2.2 and this config must not change behaviour silently.
     enable_citation_verification: true
+    # vLLM enforces a forced tool choice with a grammar that can stall the stream or run to
+    # max_tokens. Send "auto" for structured outputs instead. See docs vllm-recipes.md.
+    force_tool_choice: false
+    # One repair attempt when the writer returns a report with no citations; the job fails
+    # closed without it. Self-hosted writers need longer than the 180 s default.
+    citation_repair_timeout: ${VLLM_CITATION_REPAIR_TIMEOUT:-600}
     # NOTE: no max_loops or verbose here. Neither is a DeepResearchAgentConfig
     # field (verbose was removed upstream in 59aa926), and the schema sets
     # extra="forbid", so any stray key is a hard load error.

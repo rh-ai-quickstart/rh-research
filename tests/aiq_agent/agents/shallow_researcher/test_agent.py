@@ -144,11 +144,13 @@ class TestShallowResearcherAgent:
             max_llm_turns=5,
             max_tool_iterations=3,
             enforce_citations=True,
+            citation_repair_timeout=180.0,
         )
 
         assert agent.max_llm_turns == 5
         assert agent.max_tool_iterations == 3
         assert agent.enforce_citations is True
+        assert agent.citation_repair_timeout == 180.0
 
     def test_init_with_callbacks(self, mock_llm_provider, real_tool):
         """Test ShallowResearcherAgent initialization with callbacks."""

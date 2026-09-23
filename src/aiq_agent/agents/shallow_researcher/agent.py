@@ -45,6 +45,7 @@ from aiq_agent.common.citation_verification import EmptySourceRegistryError
 from aiq_agent.common.citation_verification import SourceEntry
 from aiq_agent.common.citation_verification import SourceRegistry
 from aiq_agent.common.citation_verification import extract_sources_from_tool_result
+from aiq_agent.common.citation_verification import format_citation_repair_sources
 from aiq_agent.common.citation_verification import get_session_registry
 from aiq_agent.common.citation_verification import is_tool_error_output
 from aiq_agent.common.citation_verification import sanitize_report
@@ -218,17 +219,6 @@ def _has_citation_integrity(report_text: str, valid_citations: Sequence[dict[str
     return any(int(number) in valid_numbers for number in _INLINE_CITATION_RE.findall(prose))
 
 
-def _format_citation_repair_sources(sources: Sequence[SourceEntry]) -> str:
-    """Render numbered source lines that a repair pass can copy verbatim."""
-    lines: list[str] = []
-    for number, source in enumerate(sources, 1):
-        if source.url:
-            lines.append(f"- [{number}] Source {number} - {source.url}")
-        elif source.citation_key:
-            lines.append(f"- [{number}] {source.citation_key}")
-    return "\n".join(lines)
-
-
 class ShallowResearcherAgent:
     """
     Shallow research agent for fast, bounded research with tool-calling.
@@ -336,7 +326,7 @@ class ShallowResearcherAgent:
         sources: Sequence[SourceEntry],
     ) -> str:
         """Run one bounded, tool-free repair against captured source identities."""
-        source_catalog = _format_citation_repair_sources(sources)
+        source_catalog = format_citation_repair_sources(sources)
         if not source_catalog:
             raise CitationIntegrityError()
 
