@@ -63,6 +63,14 @@ class ShallowResearchAgentConfig(FunctionBaseConfig, name="shallow_research_agen
         default=False,
         description="Fail instead of returning a generated answer when citation integrity cannot be preserved.",
     )
+    citation_repair_timeout: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Seconds allowed for the one-shot citation repair. Raise it for slower self-hosted "
+            "endpoints, where regenerating a cited answer takes longer than the default."
+        ),
+    )
     verbose: bool = Field(default=False, description="Whether to enable verbose logging")
 
 
@@ -182,6 +190,7 @@ async def shallow_research_agent(config: ShallowResearchAgentConfig, builder: Bu
                     max_llm_turns=config.max_llm_turns,
                     max_tool_iterations=config.max_tool_iterations,
                     enforce_citations=config.enforce_citations,
+                    citation_repair_timeout=config.citation_repair_timeout,
                     callbacks=callbacks,
                 )
 

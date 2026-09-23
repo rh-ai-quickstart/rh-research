@@ -2967,6 +2967,7 @@ class TestAsyncJobRunnerAgentFactory:
                 max_source_tool_batch_size=None,
                 resource_limits=None,
                 force_tool_choice=True,
+                citation_repair_timeout=180.0,
             ):
                 self.llm_provider = llm_provider
                 self.tools = tools
@@ -2984,6 +2985,7 @@ class TestAsyncJobRunnerAgentFactory:
                 self.max_source_tool_batch_size = max_source_tool_batch_size
                 self.resource_limits = resource_limits
                 self.force_tool_choice = force_tool_choice
+                self.citation_repair_timeout = citation_repair_timeout
 
         fn_config = DeepResearchAgentConfig(
             orchestrator_llm="llm",
@@ -2991,6 +2993,7 @@ class TestAsyncJobRunnerAgentFactory:
             enable_source_router=False,
             enable_citation_verification=False,
             force_tool_choice=False,
+            citation_repair_timeout=600.0,
             skills=DeepResearchSkillsConfig(agents={"writer-agent": ("synthesis",)}),
             sandbox=DeepResearchSandboxConfig(app_name="async-aiq"),
             max_research_concurrency=2,
@@ -3033,6 +3036,7 @@ class TestAsyncJobRunnerAgentFactory:
         assert agent.resource_limits is fn_config.resource_limits
         assert agent.resource_limits.max_source_tool_calls == 8
         assert agent.force_tool_choice is False
+        assert agent.citation_repair_timeout == 600.0
 
     def test_create_agent_instance_passes_shallow_research_config(self):
         """Async workers pass shallow citation enforcement through the constructor."""
@@ -3047,12 +3051,14 @@ class TestAsyncJobRunnerAgentFactory:
                 tools,
                 max_tool_iterations=5,
                 enforce_citations=False,
+                citation_repair_timeout=60.0,
                 callbacks=None,
             ):
                 self.llm_provider = llm_provider
                 self.tools = tools
                 self.max_tool_iterations = max_tool_iterations
                 self.enforce_citations = enforce_citations
+                self.citation_repair_timeout = citation_repair_timeout
                 self.callbacks = callbacks
 
         assert ShallowResearchAgentConfig(llm="llm").enforce_citations is False
@@ -3060,6 +3066,7 @@ class TestAsyncJobRunnerAgentFactory:
             llm="llm",
             max_tool_iterations=2,
             enforce_citations=True,
+            citation_repair_timeout=180.0,
         )
 
         agent = _create_agent_instance(
@@ -3075,6 +3082,7 @@ class TestAsyncJobRunnerAgentFactory:
         assert agent.tools == ["tool"]
         assert agent.max_tool_iterations == 2
         assert agent.enforce_citations is True
+        assert agent.citation_repair_timeout == 180.0
         assert agent.callbacks == ["callback"]
 
     def test_create_agent_instance_allows_non_deep_agent_to_reuse_deep_config(self):
@@ -3512,6 +3520,7 @@ class TestAsyncJobRunnerAgentFactory:
                 max_source_tool_batch_size=None,
                 resource_limits=None,
                 force_tool_choice=True,
+                citation_repair_timeout=180.0,
             ):
                 raise TypeError("internal constructor failure")
 

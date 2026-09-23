@@ -1095,6 +1095,17 @@ def extract_source_entries_from_report(report_text: str) -> list[SourceEntry]:
     return entries
 
 
+def format_citation_repair_sources(sources: Sequence[SourceEntry]) -> str:
+    """Render numbered source lines that a repair pass can copy verbatim."""
+    lines: list[str] = []
+    for number, source in enumerate(sources, 1):
+        if source.url:
+            lines.append(f"- [{number}] Source {number} - {source.url}")
+        elif source.citation_key:
+            lines.append(f"- [{number}] {source.citation_key}")
+    return "\n".join(lines)
+
+
 def report_has_citations(report_text: str) -> bool:
     """Return whether a report claims to contain numbered citations."""
     report_text = _normalize_citation_syntax(report_text)

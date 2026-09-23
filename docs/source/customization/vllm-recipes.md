@@ -25,6 +25,12 @@ The deep researcher's structured outputs (source routing, plan, research notes) 
 
 `config_web_vllm.yml` sets `force_tool_choice: false` on `deep_research_agent`, so these calls send `"auto"` instead. The structured-output fallback already accepts a text answer. Leave it at the default `true` for NIM.
 
+### Citation repair timeout
+
+With `enforce_citations: true`, a shallow answer that drops its citations gets one repair call that regenerates the answer with them. The default budget is 60 s, which a self-hosted endpoint can overrun; the request then fails. `config_web_vllm.yml` sets `citation_repair_timeout` to 240 s (`VLLM_CITATION_REPAIR_TIMEOUT`).
+
+Deep research has the same repair on its final report: without it, a writer that omits the Sources section fails the whole job after the research is done. `config_web_vllm.yml` gives the deep repair 600 s.
+
 ---
 
 ## Nemotron-3-Nano-30B-A3B (BF16)

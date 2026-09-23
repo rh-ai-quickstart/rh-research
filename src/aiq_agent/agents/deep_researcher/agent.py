@@ -25,19 +25,25 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from langchain_core.messages import HumanMessage
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from nemo_relay.integrations.deepagents import NemoRelayDeepAgentsCallbackHandler
 
 from aiq_agent.common import LLMProvider
+from aiq_agent.common import LLMRole
 from aiq_agent.common import load_prompt
 from aiq_agent.common import validate_research_source_configuration
+from aiq_agent.common.callbacks import SUPPRESS_OUTPUT_ARTIFACT_TAG
 from aiq_agent.common.citation_verification import CitationIntegrityError
 from aiq_agent.common.citation_verification import EmptySourceRegistryError
 from aiq_agent.common.citation_verification import EmptySourceRegistryReason
+from aiq_agent.common.citation_verification import format_citation_repair_sources
 from aiq_agent.common.citation_verification import sanitize_report
 from aiq_agent.common.citation_verification import source_entries_from_parent_context
 from aiq_agent.common.citation_verification import verify_citations
 from aiq_agent.common.logging_utils import log_content_metadata
+from aiq_agent.relay import ainvoke_with_relay
 from aiq_agent.relay import run_agent
 
 from .custom_middleware import FinalReportCommitTracker
@@ -97,6 +103,7 @@ class DeepResearcherAgent:
         max_source_tool_batch_size: int = DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE,
         resource_limits: DeepResearchResourceLimits | None = None,
         force_tool_choice: bool = True,
+        citation_repair_timeout: float = 180.0,
     ) -> None:
         """
         Initialize the deep researcher agent.
@@ -119,6 +126,8 @@ class DeepResearcherAgent:
             resource_limits: Hard per-job request, state, source-call, and wall-clock limits.
             force_tool_choice: Send the forced tool choice LangChain uses for structured output. False
                 sends "auto" instead, for vLLM-served models.
+            citation_repair_timeout: Seconds allowed for the one-shot citation repair of a report that
+                came back without citations.
         """
         self.llm_provider = llm_provider if force_tool_choice else relax_provider_tool_choice(llm_provider)
         self.tools = list(tools) if tools else []
@@ -131,6 +140,7 @@ class DeepResearcherAgent:
         self.domain_catalog_path = domain_catalog_path
         self.enable_source_router = enable_source_router
         self.enable_citation_verification = enable_citation_verification
+        self.citation_repair_timeout = citation_repair_timeout
         self.job_id = str(job_id) if job_id is not None else str(uuid4())
 
         self.deepagents_runtime = DeepAgentsRuntime(
@@ -258,6 +268,51 @@ class DeepResearcherAgent:
         seeded = self.source_registry_middleware.register_compact_sources(parent_sources)
         if seeded:
             logger.info("Seeded %d parent report source(s) into citation registry", seeded)
+
+    async def _repair_missing_citations(self, report: str, sources: Sequence[Any]) -> str:
+        """Run one bounded, tool-free repair of a report that came back without citations.
+
+        Mirrors the shallow researcher's repair: the writer model rewrites its own report,
+        copying the captured source lines, instead of the job failing after the research is done.
+        """
+        source_catalog = format_citation_repair_sources(sources)
+        if not source_catalog:
+            raise CitationIntegrityError()
+
+        repair_system = SystemMessage(
+            content=(
+                "You are a deterministic citation-repair editor. Do not research the question again and do "
+                "not call tools. Rewrite only the report you are given. Your response is invalid unless it "
+                "contains at least one inline [N] marker and a final Sources section copied from the allowed "
+                "reference lines."
+            )
+        )
+        repair_request = HumanMessage(
+            content=(
+                "This report failed the citation contract. Rewrite it once, preserving its structure and "
+                "meaning, removing claims the sources do not support. Add an inline [N] marker after each "
+                "sourced claim and finish with a `## Sources` section. Copy the corresponding allowed "
+                "reference lines verbatim; never invent a URL. Return only the repaired report.\n\n"
+                f"Allowed reference lines:\n{source_catalog}\n\nReport:\n{report}"
+            )
+        )
+        repair_config: dict[str, Any] = {"tags": [SUPPRESS_OUTPUT_ARTIFACT_TAG]}
+        if self.callbacks:
+            repair_config["callbacks"] = self.callbacks
+
+        response = await asyncio.wait_for(
+            ainvoke_with_relay(
+                self.llm_provider.get(LLMRole.REPORT_WRITER),
+                [repair_system, repair_request],
+                callbacks=self.callbacks,
+                config=repair_config,
+            ),
+            timeout=self.citation_repair_timeout,
+        )
+        repaired = getattr(response, "content", None)
+        if not isinstance(repaired, str) or not repaired.strip():
+            raise CitationIntegrityError()
+        return repaired
 
     @staticmethod
     def _replace_last_message_content(result: dict | Any, content: str) -> None:
@@ -422,7 +477,26 @@ class DeepResearcherAgent:
             if citation_registry is not None:
                 final_verification = verify_citations(final_message, citation_registry)
                 if not final_verification.valid_citations:
-                    raise CitationIntegrityError()
+                    logger.info(
+                        "Final report has no verifiable citations; attempting one bounded repair "
+                        "(registered_sources=%d)",
+                        len(citation_registry.all_sources()),
+                    )
+                    sources = self.source_registry_middleware.get_source_entries(mode="compact")
+                    try:
+                        repaired = await self._repair_missing_citations(final_message, sources)
+                    except Exception as ex:
+                        logger.warning(
+                            "Deep citation repair failed (error_type=%s detail_%s)",
+                            type(ex).__name__,
+                            log_content_metadata(ex),
+                        )
+                        raise CitationIntegrityError() from ex
+                    final_verification = verify_citations(repaired, citation_registry)
+                    if not final_verification.valid_citations:
+                        logger.warning("Deep citation repair did not restore citations")
+                        raise CitationIntegrityError()
+                    final_message = repaired
                 final_message = final_verification.verified_report
                 final_cited_urls = list(
                     dict.fromkeys(

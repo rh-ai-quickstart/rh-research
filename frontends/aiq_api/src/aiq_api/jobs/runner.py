@@ -64,11 +64,12 @@ _DEEP_RESEARCH_AGENT_KWARGS = frozenset(
         "max_source_tool_batch_size",
         "resource_limits",
         "force_tool_choice",
+        "citation_repair_timeout",
     }
 )
 _CONFIGURABLE_AGENT_KWARGS = frozenset({"config", "job_id"})
 _JOB_SCOPED_AGENT_KWARGS = frozenset({"job_id"})
-_SHALLOW_RESEARCH_AGENT_KWARGS = frozenset({"max_tool_iterations", "enforce_citations"})
+_SHALLOW_RESEARCH_AGENT_KWARGS = frozenset({"max_tool_iterations", "enforce_citations", "citation_repair_timeout"})
 _DATA_SCIENCE_AGENT_KWARGS = frozenset(
     {
         "llm",
@@ -1290,6 +1291,7 @@ def _create_agent_instance(
             max_source_tool_batch_size=fn_config.max_source_tool_batch_size,
             resource_limits=fn_config.resource_limits,
             force_tool_choice=fn_config.force_tool_choice,
+            citation_repair_timeout=fn_config.citation_repair_timeout,
         )
 
     if _constructor_accepts_explicit_kwargs(agent_cls, _CONFIGURABLE_AGENT_KWARGS):
@@ -1323,6 +1325,7 @@ def _create_agent_instance(
             tools=tools,
             max_tool_iterations=fn_config.max_tool_iterations,
             enforce_citations=fn_config.enforce_citations,
+            citation_repair_timeout=fn_config.citation_repair_timeout,
             callbacks=callbacks,
         )
 
