@@ -207,6 +207,30 @@ functions:
 - **`fast`** -- Optimized for low latency. Returns results quickly at the cost of recall and semantic depth. Use for interactive UIs, high-volume calls, or when the query is narrow and keyword-like.
 - **`deep`** -- Optimized for thoroughness. Runs a more expensive semantic search with broader retrieval. Use for research-quality queries where completeness matters more than speed.
 
+### `perplexity_web_search`
+
+Web search powered by the [Perplexity Search API](https://docs.perplexity.ai/api-reference/search-post). Calls
+`POST https://api.perplexity.ai/search` with `httpx` and returns the `title`, `url`, and `snippet` of each result.
+
+```yaml
+functions:
+  perplexity_web_search_tool:
+    _type: perplexity_web_search
+    max_results: 5
+    search_type: web
+    max_content_length: 1000
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str` | `None` | Perplexity API key. Falls back to the `PERPLEXITY_API_KEY` environment variable. Without a key the tool returns an "unavailable" message. |
+| `max_results` | `int` | `5` | Results per query, 1 to 20. |
+| `max_content_length` | `int` | `10000` | Truncates each result snippet to this many characters. Set to `None` to disable truncation. |
+| `search_type` | `str` | `"web"` | `web` or `fast`. `fast` lowers latency and cost. |
+| `search_domain_filter` | `list[str]` | `None` | Up to 20 domains. Plain entries form an allowlist, entries starting with `-` form a denylist. Do not mix them. |
+| `timeout` | `float` | `30` | Request timeout in seconds. |
+| `max_retries` | `int` | `3` | Attempts for timeouts, connection errors, and HTTP 5xx. HTTP 429 returns a rate-limit message without retrying. |
+
 ### `nimble_web_search`
 
 Web search powered by the [Nimble Search API](https://docs.nimbleway.com/nimble-sdk/web-tools/search) via

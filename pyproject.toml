@@ -228,6 +228,7 @@ dev = [
     "google-scholar-paper-search",
     "tavily-web-search",
     "exa-web-search",
+    "perplexity-web-search",
     "nimble-web-search",
     "you-com",
     "duckduckgo-news-search",
@@ -278,6 +279,7 @@ aiq-gsf = { workspace = true }
 google-scholar-paper-search = { workspace = true }
 tavily-web-search = { workspace = true }
 exa-web-search = { workspace = true }
+perplexity-web-search = { workspace = true }
 nimble-web-search = { workspace = true }
 you-com = { workspace = true }
 duckduckgo-news-search = { workspace = true }

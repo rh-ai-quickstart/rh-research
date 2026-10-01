@@ -4,7 +4,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Tools and Sources
 
-AI-Q ships provider integrations for Tavily, Google Scholar search providers, Exa, DuckDuckGo News, Polymarket, and
+AI-Q ships provider integrations for Tavily, Google Scholar search providers, Exa, Perplexity, DuckDuckGo News,
+Polymarket, and
 the [You.com API Suite](./you-com.md). Knowledge retrieval is configured separately through the
 [Knowledge Layer](./knowledge-layer.md).
 
