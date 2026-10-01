@@ -188,6 +188,12 @@ functions:
       #   description: "Search academic papers and scientific publications."
       #   tools:
       #     - paper_search_tool
+      # Uncomment when perplexity_web_search_tool is enabled (requires PERPLEXITY_API_KEY)
+      # - id: perplexity_search
+      #   name: "Perplexity Search"
+      #   description: "Search the web with the Perplexity Search API."
+      #   tools:
+      #     - perplexity_web_search_tool
 
   web_search_tool:
     _type: tavily_web_search
@@ -216,6 +222,14 @@ functions:
   #   _type: paper_search
   #   max_results: 5
   #   serper_api_key: ${SERPER_API_KEY}
+
+  # Perplexity Search (optional - requires PERPLEXITY_API_KEY)
+  # Uncomment this block AND the perplexity_search entry in the registry above to enable.
+  # perplexity_web_search_tool:
+  #   _type: perplexity_web_search
+  #   max_results: 5
+  #   search_type: web            # or "fast" for lower latency and cost
+  #   max_content_length: 1000
 
   # =========================================================================
   # Agents — omit `tools` to inherit all sources from data_source_registry
